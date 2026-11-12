@@ -104,15 +104,17 @@ function render() {
 	$('protect').hidden = !(s.paused);
 	$('query').textContent = s.querying ? '正在查询…（等运营商短信回复，约半分钟）' : '立即向运营商查询';
 	$('query').disabled = !!s.querying;
+	// (a carrier without an SMS query: nothing to ask)
+	$('query').hidden = !!s.last?.manual;
 
 	const last = s.last;
 	$('last-at').innerHTML = !last ? '还没有查询过'
 		: last.ok ? (s.last_at ?? '') : `<span class="bad">${s.last_at ?? ''} 失败</span>`;
 	$('protect-state').innerHTML = !s.protect ? '<span class="mid">已关闭</span>'
 		: s.paused ? '<span class="mid">本周期已暂停</span>' : '<span class="good">已开启</span>';
-	$('auto').textContent = s.auto_query ? `每 ${s.query_hours} 小时` : '已关闭';
+	$('auto').textContent = s.last?.manual ? '不支持（按套餐设置）' : s.auto_query ? `每 ${s.query_hours} 小时` : '已关闭';
 	const sms = $('sms');
-	sms.textContent = last && !last.ok ? '原因：' + (last.error ?? '') : last?.text ? '运营商回复：' + last.text : '';
+	sms.textContent = last && !last.ok ? '原因：' + (last.error ?? '') : last?.manual ? last.text : last?.text ? '运营商回复：' + last.text : '';
 	setFocus(focus);
 }
 

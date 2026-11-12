@@ -20,6 +20,7 @@ const DIR = '/etc/e5-dataplan', RUN = '/tmp/run/e5-dataplan';
 const LAST = DIR + '/last.json';        // the last query: written here only
 const CUT = DIR + '/cut.json';          // the cutoff this service made: written here only
 const OVERRIDE = DIR + '/override';     // "no cutoff this cycle": the backend writes it
+const MANUAL = DIR + '/manual.json';    // a plan set by hand (no SMS query): its cycle, base, carry-over
 const REQ = RUN + '/query-now';         // a query asked for from the screen
 const BUSY = RUN + '/querying';
 const RUNNING = '/var/run/e5-dataplan.running';  // this script as started: the backend restarts a stale one
@@ -33,7 +34,9 @@ const GONE_LOOPS = 3;                   // the app missing this many loops in a 
 const CARRIERS = [
 	{ codes: [ '46003', '46005', '46011', '46012' ], name: '中国电信', number: '10001', text: '108' },
 	{ codes: [ '46000', '46002', '46004', '46007', '46008', '46013' ], name: '中国移动', number: '10086', text: 'CXLL' },
-	{ codes: [ '46001', '46006', '46009', '46010' ], name: '中国联通', number: '10010', text: 'CXLL' }
+	{ codes: [ '46001', '46006', '46009', '46010' ], name: '中国联通', number: '10010', text: 'CXLL' },
+	// (no SMS query: the app and the hotline only -- the plan is set by hand, manual_gb)
+	{ codes: [ '46015' ], name: '中国广电', number: null }
 ];
 
 let bus = ubus.connect();
@@ -186,6 +189,61 @@ function guard() {
 	}
 }
 
+// A carrier without an SMS query: the plan from the settings (manual_gb a
+// month), the usage the ledger's own.  A new cycle gets the base plus what
+// was left of the last one's base (carried over; what is carried in is used
+// first, so no more than one base carries).  The usage is kept in RUN every
+// loop and on flash once an hour: the carry-over needs the last cycle's end.
+let manual_mem = null;
+function manual_apply(car) {
+	let slot = data_slot(), l = ledger(slot), s = l?.status, c = l?.config;
+	if (!s?.clock_ok || !s.cycle_start || !c) return;
+	let base = +setting('manual_gb', '0');
+	let m = manual_mem ?? load(RUN + '/manual.json', null) ?? load(MANUAL, null);
+	if (m && m.slot != slot) m = null;
+	let set = (gb) => call('unisoc.traffic', 'set', { slot: `${slot}`, payload: sprintf('%J', {
+		plan_name: c.plan_name || `${car.name}套餐`, monthly_gb: int(gb * 1000 + 0.5) / 1000.0,
+		daily_gb: c.daily_gb ?? 0, reset_day: c.reset_day ?? 1, count_mode: c.count_mode ?? 'total', device: c.device ?? '' }) });
+	if (!m) {
+		// first time: a quota already in the ledger stands (a prorated first month set by hand)
+		if (!(s.monthly_limit > 0)) {
+			if (!(base > 0)) return;
+			set(base);
+			log(`${car.name}: no SMS query, plan ${base} GB a month (manual_gb)`);
+			s = ledger(slot)?.status ?? s;
+		}
+		m = { slot, cycle: s.cycle_start, base: s.monthly_limit / 1e9, carry: 0 };
+		save(MANUAL, m);
+	} else if (m.cycle != s.cycle_start) {
+		let left = (m.limit ?? 0) - (m.used ?? 0), carry = 0;
+		if (setting('manual_carry', '1') == '1' && left > 0) carry = min(left, (m.base ?? 0) * 1e9) / 1e9;
+		if (base > 0) {
+			set(base + carry);
+			log(sprintf('%s: new cycle %s, %.2f GB + %.2f GB carried over', car.name, s.cycle_start, base, carry));
+		}
+		m = { slot, cycle: s.cycle_start, base, carry };
+		s = ledger(slot)?.status ?? s;
+		save(MANUAL, m);
+	} else if (base > 0 && !m.prorated && m.base != base && s.monthly_limit > 0) {
+		// (the setting changed mid-cycle: the new base from now, the carry-over kept)
+		set(base + (m.carry ?? 0));
+		m.base = base;
+		s = ledger(slot)?.status ?? s;
+	}
+	m.limit = s.monthly_limit; m.used = s.cycle_used;
+	manual_mem = m;
+	writefile(RUN + '/manual.json', sprintf('%J', m));
+	if (time() - (m.saved ?? 0) >= 3600) { m.saved = time(); save(MANUAL, m); }
+	// for the screen: the plan in place of a carrier answer
+	let last = load(LAST, {});
+	if (!last.manual || last.carrier != car.name || time() - (last.at ?? 0) >= 3600) {
+		save(LAST, { ok: true, manual: true, carrier: car.name, at: time(), total: s.monthly_limit,
+			used: s.cycle_used, remaining: s.remaining, ok_at: time(), fails: 0, ok_cycle: s.cycle_start,
+			text: sprintf('%s不支持短信查询：按套餐每月 %s GB 计算%s，用量为本机统计', car.name,
+				base > 0 ? sprintf('%g', base) : '?', (m.carry ?? 0) > 0 ? sprintf('（本月含结转 %.2f GB）', m.carry) : '') });
+	}
+}
+
 function finish(result) {
 	let last = load(LAST, {}), now = time();
 	if (result.ok) {
@@ -218,6 +276,7 @@ function query() {
 	writefile(BUSY, sprintf('%J', { at: time() }));
 	let car = carrier();
 	if (!car) return finish({ ok: false, error: '没有识别出运营商（没插卡或没注册上网络）' });
+	if (!car.number) { unlink(BUSY); return { ok: true, manual: true }; }
 	let msgs = api_get('/sms')?.messages;
 	if (type(msgs) != 'array') return finish({ ok: false, error: '读不到短信' });
 	let before = 0;
@@ -249,6 +308,8 @@ function query_due() {
 	if (setting('auto_query', '1') != '1') return false;
 	let hours = int(setting('query_hours', '6')) || 6, now = time();
 	let last = load(LAST, {}), s = ledger()?.status;
+	// (back from a card set by hand: the SMS carrier's own figures at once)
+	if (last.manual) return true;
 	let stale = now - (last.ok_at ?? 0) >= hours * 3600;
 	// a new cycle: the carrier's new allowance (carry-over too), once its figures have caught up
 	let start = day_epoch(s?.cycle_start);
@@ -299,7 +360,9 @@ while (true) {
 	if (gone >= GONE_LOOPS) removed();
 	if (!gone) {
 		guard();
-		if (query_due()) query();
+		let car = carrier();
+		if (car && !car.number) { if (stat(REQ)) unlink(REQ); manual_apply(car); }
+		else if (query_due()) query();
 		guard();
 	}
 	system(`sleep ${LOOP_S}`);
