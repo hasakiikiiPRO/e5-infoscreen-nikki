@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>代理</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8; --line:#222c39;
+		--green:#42d391; --red:#f26a6d; --amber:#f0b44c; --blue:#6aa8ff; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; }
+	[hidden] { display: none !important; }
+	button { font: inherit; color: inherit; border: 0; background: var(--card); border-radius: 10px; cursor: none; outline: none; text-align: left; }
+	button.focus { box-shadow: 0 0 0 2px #dce8ff; }
+	button:active { filter: brightness(1.25); }
+	.heading { display: flex; align-items: center; justify-content: space-between; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; }
+	.heading span { font-size: 11px; color: var(--dim); max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.card { background: var(--card); border-radius: 10px; padding: 9px 11px; flex-shrink: 0; }
+	.label { color: var(--dim); font-size: 11px; }
+	.node { font-size: 17px; font-weight: 600; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.sub { color: var(--dim); font-size: 11px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.power { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; font-weight: 600; flex-shrink: 0; }
+	.pill { font-size: 12px; padding: 2px 9px; border-radius: 10px; font-weight: 600; }
+	.on { background: #123826; color: var(--green); } .off { background: #3a1a1e; color: var(--red); }
+	.wait { background: #3a2f17; color: var(--amber); }
+	.list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; scrollbar-width: none; }
+	.item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; min-height: 42px; flex-shrink: 0; }
+	.item .name { flex: 1; min-width: 0; }
+	.item .name b { display: block; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.item .name small { display: block; color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.item .ms { font-size: 11px; color: var(--dim); flex-shrink: 0; }
+	.item.current { background: #17283a; }
+	.item.current .name b { color: var(--blue); }
+	.good { color: var(--green) !important; } .mid { color: var(--amber) !important; } .bad { color: var(--red) !important; }
+	.feedback { padding: 6px 8px; border-radius: 7px; background: #402229; color: #ffb0b0; font-size: 11px; flex-shrink: 0; }
+	.feedback.info { background: #1a293a; color: #b9d4f0; }
+	.empty { color: var(--dim); font-size: 12px; padding: 10px 2px; }
+	.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 7px; }
+	.modes button { text-align: center; padding: 7px 0; font-size: 13px; color: var(--dim); }
+	.modes button.sel { background: #1d3a5c; color: #cfe3ff; font-weight: 600; }
+	.modes button.sel.warn { background: #3a2f17; color: var(--amber); }
+	.subrow { display: flex; gap: 5px; flex-shrink: 0; }
+	.subrow .item { flex: 1; min-width: 0; }
+	.subrow .upd { flex-shrink: 0; width: 54px; text-align: center; font-size: 12px; color: var(--blue); }
+</style>
+</head>
+<body>
+<header class="heading"><strong id="title">代理</strong><span id="subtitle"></span></header>
+<div id="feedback" class="feedback" hidden></div>
+
+<section id="main-view">
+	<button id="power" class="power"><span id="power-text">代理</span><span id="power-pill" class="pill"></span></button>
+	<div class="modes" id="modes"><button data-mode="rule">规则</button><button data-mode="global">全局</button><button data-mode="direct">直连</button></div>
+	<div class="card" id="current" style="margin-top:7px">
+		<div class="label" id="current-label">当前节点</div>
+		<div class="node" id="current-node">—</div>
+		<div class="sub" id="current-sub"></div>
+	</div>
+</section>
+<div id="list" class="list"></div>
+
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const MODES = { rule: '规则', global: '全局', direct: '直连' };
+// the screen has no emoji font: 🚀/🇺🇸/♻️ would show as boxes, so names are shown without them
+// (the real names still go to the backend)
+const ICONS = (() => {
+	try { return new RegExp('[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\u{1F3FB}-\\u{1F3FF}\\u{FE0E}\\u{FE0F}\\u{200D}\\u{20E3}]', 'gu'); }
+	catch (e) { return null; }
+})();
+const nm = (s) => (ICONS && String(s ?? '').replace(ICONS, '').replace(/\s+/g, ' ').trim()) || String(s ?? '');
+const escN = (s) => esc(nm(s));
+
+let st = null;          // the last /status
+let view = 'main';      // main | group | subs
+let subs = null;        // the /subs answer
+let group = null;       // the open group's /group answer
+let focus = -1;         // index into the focusable buttons
+let busy = false;
+let timer = null;
+
+function msDelay(d) {
+	if (d == null) return '';
+	const v = Math.round(Number(d)) || 0;
+	if (v <= 0) return '<span class="bad">超时</span>';
+	const cls = v < 300 ? 'good' : v < 800 ? 'mid' : 'bad';
+	return `<span class="${cls}">${v} ms</span>`;
+}
+
+function say(text, info) {
+	const f = $('feedback');
+	f.textContent = text;
+	f.className = 'feedback' + (info ? ' info' : '');
+	f.hidden = !text;
+	if (text) setTimeout(() => { if (f.textContent == text) f.hidden = true; }, info ? 2500 : 5000);
+}
+
+function focusables() {
+	return [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null);
+}
+function setFocus(i) {
+	document.querySelectorAll('button.focus').forEach((b) => b.classList.remove('focus'));
+	const all = focusables();
+	if (!all.length) { focus = -1; return; }
+	focus = Math.max(0, Math.min(i, all.length - 1));
+	all.forEach((b, k) => b.classList.toggle('focus', k == focus));
+	all[focus].scrollIntoView({ block: 'nearest' });
+}
+
+function renderMain() {
+	$('title').textContent = '代理';
+	$('main-view').hidden = false;
+	const pill = $('power-pill'), on = st?.enabled;
+	let pillText, pillCls;
+	if (!st) { pillText = '…'; pillCls = 'wait'; }
+	else if (st.starting) { pillText = '启动中'; pillCls = 'wait'; }
+	else if (st.stopping) { pillText = '停止中'; pillCls = 'wait'; }
+	else if (st.running) { pillText = '已开启'; pillCls = 'on'; }
+	else { pillText = on ? '未运行' : '已关闭'; pillCls = 'off'; }
+	pill.textContent = pillText;
+	pill.className = 'pill ' + pillCls;
+	$('power-text').textContent = st?.running ? '关闭代理' : '开启代理';
+	$('subtitle').textContent = st ? `${nm(st.profile)}${st.mode ? ' · ' + (MODES[st.mode] ?? st.mode) + '模式' : ''}` : '';
+
+	if (st?.main) {
+		$('current-label').textContent = '当前节点 · ' + nm(st.main.group);
+		$('current-node').textContent = nm(st.main.node);
+		$('current-sub').innerHTML = st.main.delay != null ? '上次测速 ' + msDelay(st.main.delay) : '进入下面的分组可切换、测速';
+	} else {
+		$('current-label').textContent = '当前节点';
+		$('current-node').textContent = '—';
+		$('current-sub').textContent = st?.api_error ? '出错：' + st.api_error
+			: st?.starting ? '启动中…' : st?.running ? '读取中…' : '代理没有运行';
+	}
+	if (st?.api_error && st?.main) $('current-sub').textContent = '出错：' + st.api_error;
+	if (st?.mode == 'direct' && st?.running) $('current-sub').innerHTML = '<span class="mid">直连模式：所有流量走本地网络，不翻墙</span>';
+	$('modes').hidden = !st?.running;
+	document.querySelectorAll('[data-mode]').forEach((b) => {
+		b.classList.toggle('sel', b.dataset.mode == st?.mode);
+		b.classList.toggle('warn', b.dataset.mode == 'direct');
+	});
+
+	const list = $('list');
+	const groups = st?.groups ?? [];
+	const subRow = `<button class="item" data-subs="1"><span class="name"><b>订阅</b><small>${escN(st?.profile ?? '')}</small></span><span class="ms">›</span></button>`;
+	list.innerHTML = subRow + (groups.length
+		? groups.map((g, i) => `<button class="item" data-group="${i}"><span class="name"><b>${escN(g.name)}</b>` +
+			`<small>${escN(g.now)}${g.leaf != g.now ? ' › ' + escN(g.leaf) : ''}</small></span><span class="ms">${g.count}</span></button>`).join('')
+		: `<div class="empty">${st?.running ? '' : '开启代理后可以切换节点'}</div>`);
+	list.querySelector('[data-subs]').onclick = openSubs;
+	list.querySelectorAll('[data-group]').forEach((b) => b.onclick = () => openGroup(groups[+b.dataset.group].name));
+}
+
+function renderGroup() {
+	$('main-view').hidden = true;
+	$('title').textContent = nm(group.name);
+	$('subtitle').textContent = '确定=选用  ←/→=测速';
+	const list = $('list');
+	list.innerHTML = group.nodes.map((n, i) => `<button class="item${n.name == group.now ? ' current' : ''}" data-node="${i}">` +
+		`<span class="name"><b>${n.name == group.now ? '✓ ' : ''}${escN(n.name)}</b>` +
+		`${n.leaf != n.name ? `<small>› ${escN(n.leaf)}</small>` : ''}</span><span class="ms" id="ms-${i}">${msDelay(n.delay)}</span></button>`).join('');
+	list.querySelectorAll('[data-node]').forEach((b) => b.onclick = () => choose(group.nodes[+b.dataset.node].name));
+}
+
+function subInfo(x) {
+	const parts = [];
+	if (x.left) parts.push('剩 ' + x.left + (x.total ? ' / ' + x.total : ''));
+	if (x.expire) parts.push('到期 ' + x.expire.slice(0, 10));
+	if (x.updated) parts.push('更新于 ' + x.updated.slice(5, 16));
+	else if (!x.ok) parts.push('还没下载成功');
+	return parts.join(' · ');
+}
+
+function renderSubs() {
+	$('main-view').hidden = true;
+	$('title').textContent = '订阅';
+	$('subtitle').textContent = '确定=切换  右侧=更新';
+	const list = $('list');
+	list.innerHTML = (subs?.subs ?? []).map((x, i) => `<div class="subrow">` +
+		`<button class="item${x.current ? ' current' : ''}" data-sub="${i}"><span class="name"><b>${x.current ? '✓ ' : ''}${escN(x.name)}</b>` +
+		`<small>${esc(subInfo(x))}</small></span></button>` +
+		`<button class="upd" data-upd="${i}">${subs.updating == x.id ? '更新中' : '更新'}</button></div>`).join('') +
+		`<div class="empty">添加新订阅：手机连上热点，浏览器打开 192.168.9.1 → 服务 → Nikki → 配置文件</div>`;
+	list.querySelectorAll('[data-sub]').forEach((b) => b.onclick = () => switchSub(subs.subs[+b.dataset.sub]));
+	list.querySelectorAll('[data-upd]').forEach((b) => b.onclick = () => updateSub(subs.subs[+b.dataset.upd]));
+}
+
+async function loadSubs() {
+	try { subs = await e5.api('/subs'); } catch (e) { say('读取订阅失败：' + (e.message || e)); return false; }
+	return true;
+}
+async function openSubs() {
+	if (!(await loadSubs())) return;
+	view = 'subs';
+	renderSubs();
+	const cur = subs.subs.findIndex((x) => x.current);
+	setFocus(cur < 0 ? 0 : cur * 2);
+}
+async function switchSub(x) {
+	if (busy || x.current) return;
+	busy = true;
+	try {
+		const r = await e5.api('/sub', { body: { id: x.id } });
+		say(r.restarting ? '已切换到 ' + nm(x.name) + '，重启代理中…' : '已切换到 ' + nm(x.name), true);
+		if (r.restarting) { e5.keepAwake(true); setTimeout(() => e5.keepAwake(false), 90000); }
+		await loadSubs();
+		if (view == 'subs') render(true);
+	} catch (e) { say(e.message || String(e)); } finally { busy = false; }
+	refresh();
+}
+async function updateSub(x) {
+	if (busy) return;
+	busy = true;
+	try {
+		const r = await e5.api('/sub-update', { body: { id: x.id } });
+		say(r.restarting ? '正在更新并重启代理…' : '正在更新 ' + nm(x.name) + '…', true);
+		await loadSubs();
+		if (view == 'subs') render(true);
+	} catch (e) { say(e.message || String(e)); } finally { busy = false; }
+	refresh();
+}
+
+async function setMode(mode) {
+	if (busy || !st?.running || st.mode == mode) return;
+	busy = true;
+	try {
+		await e5.api('/mode', { body: { mode } });
+		say('已切换到' + MODES[mode] + '模式', true);
+	} catch (e) { say(e.message || String(e)); } finally { busy = false; }
+	refresh();
+}
+document.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+
+function render(keepFocus) {
+	if (view == 'group' && group) renderGroup();
+	else if (view == 'subs' && subs) renderSubs();
+	else renderMain();
+	setFocus(keepFocus ? focus : 0);
+}
+
+async function refresh() {
+	try {
+		st = await e5.api('/status');
+	} catch (e) {
+		st = null;
+		say('读取状态失败：' + (e.message || e));
+	}
+	if (view == 'main') render(true);
+	if (view == 'subs' && (await loadSubs()) && view == 'subs') render(true);
+	clearTimeout(timer);
+	timer = setTimeout(refresh, (st?.starting || st?.stopping || subs?.updating) ? 1500 : 5000);
+}
+
+async function openGroup(name) {
+	try {
+		group = await e5.api('/group?name=' + encodeURIComponent(name));
+		view = 'group';
+		const cur = group.nodes.findIndex((n) => n.name == group.now);
+		renderGroup();
+		setFocus(cur < 0 ? 0 : cur);
+	} catch (e) {
+		say('打开分组失败：' + (e.message || e));
+	}
+}
+
+async function choose(node) {
+	if (busy) return;
+	busy = true;
+	try {
+		await e5.api('/select', { body: { group: group.name, node } });
+		group.now = node;
+		say('已切换到 ' + nm(node), true);
+		renderGroup();
+		setFocus(group.nodes.findIndex((n) => n.name == node));
+		refresh();
+	} catch (e) {
+		say(e.message || String(e));
+	} finally { busy = false; }
+}
+
+// one test per node at a time, at most three at once: each is a CGI and a curl on the device
+const testing = new Set();
+async function testDelay(i) {
+	const n = group?.nodes[i];
+	if (!n || testing.has(n.leaf) || testing.size >= 3) return;
+	testing.add(n.leaf);
+	const g = group;
+	const cell = $('ms-' + i);
+	if (cell) cell.textContent = '测速…';
+	let d = 0;
+	try { d = (await e5.api('/delay', { body: { node: n.leaf } })).delay; } catch (e) { d = 0; }
+	testing.delete(n.leaf);
+	if (group !== g) return;
+	// every row on that node, looked up again: the list may have been redrawn meanwhile
+	g.nodes.forEach((m, k) => {
+		if (m.leaf != n.leaf) return;
+		m.delay = d;
+		const c = $('ms-' + k);
+		if (c) c.innerHTML = msDelay(d);
+	});
+}
+
+async function power() {
+	if (busy || !st || st.starting || st.stopping) return;
+	busy = true;
+	const on = !st.running;
+	try {
+		await e5.api('/power', { body: { on } });
+		say(on ? '正在开启，约 10 秒…' : '正在关闭…', true);
+		st.starting = on; st.stopping = !on;
+		renderMain();
+		e5.keepAwake(true);
+		setTimeout(() => e5.keepAwake(false), 90000);
+	} catch (e) {
+		say(e.message || String(e));
+	} finally { busy = false; }
+	refresh();
+}
+
+$('power').onclick = power;
+
+e5.onKey((k) => {
+	const all = focusables();
+	if (k.kind == 'up') { setFocus(focus - 1); return true; }
+	if (k.kind == 'down') { setFocus(focus + 1); return true; }
+	if (k.kind == 'ok' && all[focus]) { e5.press(all[focus]); return true; }
+	if ((k.kind == 'left' || k.kind == 'right') && view == 'group') {
+		if (k.repeat) return true;
+		const i = +all[focus]?.dataset.node;
+		if (!Number.isNaN(i)) testDelay(i);
+		return true;
+	}
+	return false;
+});
+// focus the button that matches, on the main view
+function focusOn(selector) {
+	const el = document.querySelector(selector);
+	const i = el ? focusables().indexOf(el) : -1;
+	setFocus(i < 0 ? 0 : i);
+}
+e5.onBack(() => {
+	if (view == 'group' || view == 'subs') {
+		const from = view, name = group?.name;
+		view = 'main'; group = null;
+		renderMain();
+		if (from == 'subs') focusOn('[data-subs]');
+		else focusOn(`[data-group="${(st?.groups ?? []).findIndex((g) => g.name == name)}"]`);
+		refresh();
+		return true;
+	}
+	return false;
+});
+
+renderMain();
+setFocus(0);
+refresh();
+</script>
+</body>
+</html>

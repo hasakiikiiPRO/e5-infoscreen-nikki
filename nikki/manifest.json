@@ -1,0 +1,9 @@
+{
+	"id": "nikki",
+	"api_version": 2,
+	"version": "1.2",
+	"name": { "zh": "代理", "en": "Proxy" },
+	"description": { "zh": "Nikki 代理：开关、当前节点、切换节点", "en": "Nikki proxy: on/off, current node, node switching" },
+	"entry": "index.html",
+	"order": 20
+}
