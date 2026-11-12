@@ -1,0 +1,79 @@
+<!-- BEGIN e5-dataplan (the dataplan app, /etc/e5-infoscreen/plugins/dataplan) -->
+<script>
+// The lock screen's 套餐剩余 row, at the top of its usage box: what is left of
+// the plan and a bar, from the dataplan app's GET /status -- every 60 s while
+// the screen is lit (and at once when it lights up).  Without the app (404)
+// or without a plan the row goes.
+(function () {
+	const API = '/api/plugins/dataplan/status', EVERY = 60000;
+	const css = document.createElement('style');
+	// (one line and a thin bar: the lock screen has little height to spare, and
+	// the usage box below tightens a little while the row is there -- the
+	// swipe hint at the bottom has to stay on a 480 px screen)
+	css.textContent =
+		'#lock-plan { padding-bottom: 9px; margin-bottom: 9px; border-bottom: 1px solid #ffffff10; }' +
+		'#lock-plan .lp-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }' +
+		'#lock-plan .lp-label { color: #9fb8bf; font-size: calc(10px * var(--ui-scale, 1)); }' +
+		'#lock-plan strong { font: 400 calc(17px * min(var(--ui-scale, 1), 1.15))/1.2 "DejaVu Sans", sans-serif;' +
+		' letter-spacing: -.3px; color: #edf5f4; white-space: nowrap; }' +
+		'#lock-plan strong small { font-size: 11px; color: #91aaaf; margin-left: 3px; letter-spacing: 0; }' +
+		'#lock-plan .lp-pct { color: #9fb8bf; font-size: calc(11px * var(--ui-scale, 1)); margin-left: 6px; font-variant-numeric: tabular-nums; }' +
+		'#lock-plan .lp-track { height: 4px; border-radius: 2px; background: #ffffff16; overflow: hidden; margin-top: 6px; }' +
+		'#lock-plan .lp-fill { height: 100%; border-radius: 2px; background: var(--accent, #42d391); width: 0; transition: width .4s ease; }' +
+		'#lock-plan.low .lp-fill { background: #dba65d; } #lock-plan.over .lp-fill { background: #e5736f; }' +
+		'#lock-plan.over strong { color: #ffb0b0; }' +
+		'body.has-plan #lock-summary { padding: 11px 14px; }' +
+		'body.has-plan .lock-usage strong { line-height: 1.25; }' +
+		'body.has-plan #lock-rates { padding-top: 8px; margin-top: 8px; }';
+	document.head.appendChild(css);
+
+	let row = null, gone = false, timer = null;
+	function place() {
+		const box = document.getElementById('lock-summary');
+		if (!box) return false;
+		row = document.createElement('div');
+		row.id = 'lock-plan';
+		row.hidden = true;
+		row.innerHTML = '<div class="lp-head"><span class="lp-label">套餐剩余</span>' +
+			'<span><strong></strong><span class="lp-pct"></span></span></div>' +
+			'<div class="lp-track"><div class="lp-fill"></div></div>';
+		box.prepend(row);
+		return true;
+	}
+	const lit = () => !document.hidden && !(typeof blank !== 'undefined' && blank);
+
+	function render(s) {
+		const show = !!(s && s.limit > 0 && s.remaining != null);
+		document.body.classList.toggle('has-plan', show);
+		if (!show) { row.hidden = true; return; }
+		const left = Math.max(0, Number(s.remaining) || 0), pct = Math.max(0, Math.min(100, left * 100 / s.limit));
+		row.querySelector('strong').innerHTML = (left / 1e9).toFixed(2) + '<small>GB</small>';
+		row.querySelector('.lp-pct').textContent = s.over ? '已用完' : pct.toFixed(0) + '%';
+		row.querySelector('.lp-fill').style.width = pct + '%';
+		row.classList.toggle('low', !!s.low && !s.over);
+		row.classList.toggle('over', !!s.over);
+		row.hidden = false;
+	}
+	async function poll() {
+		clearTimeout(timer);
+		if (gone || !row) return;
+		if (lit()) {
+			try {
+				const r = await fetch(API, { cache: 'no-store' });
+				if (r.status == 404) { gone = true; row.remove(); document.body.classList.remove('has-plan'); return; }
+				if (r.ok) render(await r.json());
+			} catch (e) { /* the next poll */ }
+		}
+		timer = setTimeout(poll, EVERY);
+	}
+	// (mobile.js builds the lock screen before app.js: here it is; if not yet, a moment later)
+	(function start(n) {
+		if (place()) { poll(); document.addEventListener('visibilitychange', () => { if (lit()) poll(); }); }
+		else if (n < 20) setTimeout(() => start(n + 1), 500);
+	})(0);
+	// lighting up again: fresh figures rather than an up-to-a-minute-old one
+	let wasLit = lit();
+	setInterval(() => { const now = lit(); if (now && !wasLit) poll(); wasLit = now; }, 1000);
+})();
+</script>
+<!-- END e5-dataplan -->

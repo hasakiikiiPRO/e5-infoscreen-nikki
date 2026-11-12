@@ -1,8 +1,15 @@
-# 荣悦 E5 信息屏「代理」应用（Nikki）
+# 荣悦 E5 信息屏应用：代理（Nikki）与流量
 
-给荣悦 E5 OpenWrt 的信息屏（机身上那块 320×480 小屏）用的应用。用它可以直接在设备上操作 [Nikki](https://github.com/nikkinikki-org/OpenWrt-nikki)（mihomo 透明代理），不用再打开电脑或手机浏览器。
+给荣悦 E5 OpenWrt 的信息屏（机身上那块 320×480 小屏）用的两个应用，都可以直接在设备上操作，不用打开电脑或手机浏览器：
 
-## 功能
+- **「代理」**（`nikki/`）：控制 [Nikki](https://github.com/nikkinikki-org/OpenWrt-nikki)（mihomo 透明代理）。
+- **「流量」**（`dataplan/`）：自动发短信向运营商查询套餐，显示剩余流量（锁屏上也有），快用完时提醒，用完自动断开移动数据。
+
+两个应用互不依赖，按需安装即可。
+
+## 「代理」
+
+### 功能
 
 - **开关代理**：开启或关闭 Nikki。按钮显示 已开启 / 已关闭 / 启动中 / 停止中，要等透明代理真正接管流量后才显示"已开启"。
 - **模式**：规则 / 全局 / 直连，切换立即生效，重启后保持。
@@ -14,7 +21,7 @@
 
 添加新订阅请用 LuCI（服务 → Nikki → 配置文件）。在小屏上用按键输入长链接实在太难了。
 
-## 操作
+### 操作
 
 | 按键 | 作用 |
 |---|---|
@@ -25,9 +32,8 @@
 
 触摸也能用。
 
-## 需要什么
+### 需要什么
 
-- 荣悦 E5 上运行 [e5-linux](https://github.com/sprd-linux-devs/e5-linux) 的 OpenWrt，信息屏插件 API 版本 2。社区的 [e5-sleep 刷机包](https://github.com/CharlesGool/e5-openwrt-flasher) 也可以。
 - 已经装好 Nikki，并配好至少一个订阅：
 
   ```sh
@@ -35,28 +41,71 @@
   ```
 
 - 国内网络下 mihomo 第一次启动时，可能因为从 GitHub 下载 GeoIP 数据库超时而失败。解决办法：把电脑上 Clash 客户端的 `Country.mmdb`（改名为 `geoip.metadb`）和 `geosite.dat` 拷到 `/etc/nikki/run/`。
+- 有的机场按 User-Agent 拦截：用 `clash.meta` 拉取会返回 Cloudflare 验证页或"访问受限"假节点。在 Nikki 里把订阅的 User-Agent 设成 `clash-verge/v2.4.2` 就能正常拉取。
 
-## 安装
-
-从 [Releases](../../releases) 下载 `nikki-infoscreen-*.tar.gz`，拷到设备上：
-
-```sh
-scp -O nikki-infoscreen-1.2.tar.gz root@192.168.9.1:/tmp/
-ssh root@192.168.9.1 /usr/libexec/e5-infoscreen/plugin install /tmp/nikki-infoscreen-1.2.tar.gz
-```
-
-也可以自己打包：在仓库根目录运行 `tar czf nikki-infoscreen.tar.gz nikki`。
-
-装好后，在信息屏的应用列表里打开「代理」。应用装在 `/etc/e5-infoscreen/plugins/nikki`，以后升级系统镜像也会保留。卸载用 `/usr/libexec/e5-infoscreen/plugin remove nikki`。
-
-## 实现
+### 实现
 
 - `backend.uc`：信息屏后端以 root 身份运行的 ucode 路由。它通过 mihomo 的外部控制接口（`127.0.0.1:9090`）读取和切换节点，用 uci 和 `/etc/init.d/nikki` 处理开关、订阅和模式。
   - 控制接口的密钥只在后端使用，通过 curl 的 `-K -`（标准输入）传进去，不会出现在进程列表里。页面上只能看到分组和节点名。
   - 分组名和节点名先跟 mihomo 当前的数据核对，确认存在后才会用到；传给 shell 的内容一律加了引号。
   - 开关和切换订阅时会记下重启前的 mihomo PID，等新进程起来、`inet nikki` 的 nft 表建好后，才算启动完成。启动或停止期间的重复操作会被拒绝。
 - `index.html`：页面本身，使用信息屏 SDK（`/sdk/e5.js`）处理按键，并调用后端接口。
-- `manifest.json`：应用的描述文件（API 版本 2）。
+
+## 「流量」
+
+### 功能
+
+- **向运营商查询**：定时（默认每 6 小时）发短信查询套餐，查询是免费的：电信发「108」到 10001，移动发「CXLL」到 10086，联通发「CXLL」到 10010。
+  - 从回复中解析出通用流量的「共有 / 剩余」，再用它校准系统自带的流量统计（`unisoc.traffic`）：设置额度，修正本周期已用量。这样在手机上或 Android 下用掉的流量也会算进去。
+  - 解析前会先去掉括号里的说明（例如"含上月结转 15.42GB"）；只讲定向流量的回复会被忽略；如果短信里总量、已用、剩余三个数都有，会检查它们能不能对上。
+- **显示**：在应用里看剩余、已用、总量、今日用量、统计周期，以及运营商的回复原文。
+- **锁屏**：锁屏上的用量框顶部多一行「套餐剩余 X GB · N%」和一根细进度条，快用完时变黄，用完时变红。
+- **提醒**：剩余低于设定的百分比（5/10/20%）时，在信息屏上弹出通知。
+- **用完自动断网**：用完后约 20 秒内断开移动数据，并亮屏通知；下个周期开始时自动接回。
+  - 在应用里点「恢复上网」，本周期内就不再自动断网，以后可以随时重新开启。
+  - 只撤销自己做过的断网。热点省电应用在热点关闭时用 `auto=0` 关掉的数据，它不会去碰。
+- **出错时的处理**：
+  - 查询失败后按 15 分钟、30 分钟、1 小时……逐步拉长间隔重试，不会连续发短信。
+  - 新周期开始后等 3 小时再查，因为运营商月初的数据有延迟。
+  - 系统时间没同步时不校准。
+  - 读不到流量统计时什么都不改。
+
+运营商的 "GB" 按 10⁹ 字节计算，这样屏幕、LuCI 和短信里的数字完全一致。如果运营商实际按 1024 计算，那么显示的剩余量会比实际少约 7%，断网只会提前，不会超额。
+
+**目前只用中国电信的真实回复测试过。** 移动和联通的回复格式如果不一样，查询会失败，应用会显示原因，但不会改动任何设置。
+
+设置（查询开关、查询间隔、提醒阈值、自动断网）在信息屏的「高级」里，「流量」这一项下面。
+
+### 实现
+
+- `service.uc` + `dataplan.init`：procd 后台服务，每 20 秒检查一次是否超额，到时间就发短信查询。
+  - 短信通过信息屏自己的 `/api/sms-send` 和 `/api/sms` 接口收发。
+  - 断网用 `ifdown`，恢复用 `ubus network.interface up`，与状态看板上的「移动数据」开关是同一个接口。
+  - 应用卸载后，服务会从 procd 注销、删除自己的 init 脚本，并把锁屏改动还原。
+- `backend.uc`：屏幕页面和通知用的接口。它负责安装后台服务；服务代码有变化时会重启服务；锁屏那一行在系统升级后被覆盖掉，也会重新加回来。这些检查每分钟一次，挂在信息屏的通知轮询上执行。
+- `lock-card.html`：锁屏那一行，插在信息屏页面 `index.html` 里 `app.js` 之后，和「热点省电」插 CPU 卡片的方式相同。
+- `index.html`：应用页面。
+
+## 共同
+
+### 需要什么
+
+荣悦 E5 上运行 [e5-linux](https://github.com/sprd-linux-devs/e5-linux) 的 OpenWrt，信息屏插件 API 版本 2。社区的 [e5-sleep 刷机包](https://github.com/CharlesGool/e5-openwrt-flasher) 也可以。
+
+### 安装
+
+从 [Releases](../../releases) 下载安装包，拷到设备上安装（以「流量」为例）：
+
+```sh
+scp -O dataplan-infoscreen-1.2.tar.gz root@192.168.9.1:/tmp/
+ssh root@192.168.9.1 /usr/libexec/e5-infoscreen/plugin install /tmp/dataplan-infoscreen-1.2.tar.gz
+```
+
+也可以自己打包：在仓库根目录运行 `tar czf dataplan-infoscreen.tar.gz dataplan`（「代理」把 `dataplan` 换成 `nikki`）。
+
+装好后在信息屏的应用列表里打开。应用装在 `/etc/e5-infoscreen/plugins/<id>`，升级系统镜像也会保留。卸载用 `/usr/libexec/e5-infoscreen/plugin remove <id>`。
+
+两个应用的后端都以 root 运行（信息屏插件的通用规则）。装之前请先看过代码。
 
 ## 许可
 

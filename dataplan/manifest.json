@@ -1,0 +1,41 @@
+{
+	"id": "dataplan",
+	"api_version": 2,
+	"version": "1.2",
+	"name": { "zh": "流量", "en": "Data plan" },
+	"description": { "zh": "短信向运营商查套餐流量，显示剩余，快用完提醒，用完自动断开数据", "en": "Asks the carrier for the plan by SMS, shows what is left, warns and cuts data when it runs out" },
+	"entry": "index.html",
+	"order": 21,
+	"notifications": true,
+	"settings": [
+		{
+			"id": "auto_query", "type": "toggle", "uci": "e5-plugin-dataplan.settings.auto_query", "default": "1",
+			"label": { "zh": "定时短信查询套餐", "en": "Ask the carrier regularly" },
+			"note": { "zh": "向运营商发查询短信（电信 10001、移动 10086、联通 10010，免费）", "en": "An SMS to the carrier's free service number" }
+		},
+		{
+			"id": "query_hours", "type": "choice", "uci": "e5-plugin-dataplan.settings.query_hours", "default": "6",
+			"label": { "zh": "查询间隔", "en": "Ask every" },
+			"options": [
+				{ "value": "3", "label": { "zh": "3 小时", "en": "3 hours" } },
+				{ "value": "6", "label": { "zh": "6 小时", "en": "6 hours" } },
+				{ "value": "12", "label": { "zh": "12 小时", "en": "12 hours" } },
+				{ "value": "24", "label": { "zh": "24 小时", "en": "24 hours" } }
+			]
+		},
+		{
+			"id": "warn_percent", "type": "choice", "uci": "e5-plugin-dataplan.settings.warn_percent", "default": "10",
+			"label": { "zh": "剩余低于多少时提醒", "en": "Warn below" },
+			"options": [
+				{ "value": "5", "label": { "zh": "5%", "en": "5%" } },
+				{ "value": "10", "label": { "zh": "10%", "en": "10%" } },
+				{ "value": "20", "label": { "zh": "20%", "en": "20%" } }
+			]
+		},
+		{
+			"id": "auto_cut", "type": "toggle", "uci": "e5-plugin-dataplan.settings.auto_cut", "default": "1",
+			"label": { "zh": "用完自动断开移动数据", "en": "Cut mobile data when used up" },
+			"note": { "zh": "新周期开始或在应用里恢复后自动接回", "en": "Back at the next cycle, or from the app" }
+		}
+	]
+}

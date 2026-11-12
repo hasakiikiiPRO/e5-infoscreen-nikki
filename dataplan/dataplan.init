@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+# 流量 (dataplan): the info screen app's background service
+# (/etc/e5-infoscreen/plugins/dataplan/service.uc).  Installed by the app's
+# backend; the service removes this script when the app is removed.
+START=99
+USE_PROCD=1
+
+SCRIPT=/etc/e5-infoscreen/plugins/dataplan/service.uc
+
+start_service() {
+	[ -f "$SCRIPT" ] || return 0
+	procd_open_instance
+	procd_set_param command /usr/bin/ucode "$SCRIPT"
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}

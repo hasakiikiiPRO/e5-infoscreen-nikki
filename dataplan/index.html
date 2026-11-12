@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>流量</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8;
+		--green:#42d391; --red:#f26a6d; --amber:#f0b44c; --blue:#6aa8ff; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; overflow-y: auto; scrollbar-width: none; }
+	[hidden] { display: none !important; }
+	button { font: inherit; color: inherit; border: 0; background: var(--card); border-radius: 10px; cursor: none; outline: none;
+		width: 100%; padding: 11px 12px; font-weight: 600; flex-shrink: 0; }
+	button.focus { box-shadow: 0 0 0 2px #dce8ff; }
+	button:active { filter: brightness(1.25); }
+	button.danger { background: #3a1a1e; color: #ffb0b0; }
+	.heading { display: flex; align-items: center; justify-content: space-between; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; }
+	.heading span { font-size: 11px; color: var(--dim); }
+	.card { background: var(--card); border-radius: 10px; padding: 10px 12px; flex-shrink: 0; }
+	.label { color: var(--dim); font-size: 11px; }
+	.big { font-size: 34px; font-weight: 700; line-height: 1.15; margin-top: 2px; }
+	.big small { font-size: 15px; font-weight: 500; color: var(--dim); margin-left: 3px; }
+	.bar { height: 8px; border-radius: 4px; background: #222c39; overflow: hidden; margin: 8px 0 6px; }
+	.bar i { display: block; height: 100%; background: var(--green); width: 0; }
+	.row { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-top: 3px; }
+	.row b { color: var(--text); font-weight: 500; }
+	.alert { border-radius: 10px; padding: 9px 11px; font-size: 12px; line-height: 1.5; flex-shrink: 0; }
+	.alert.red { background: #402229; color: #ffb0b0; } .alert.amber { background: #3a2f17; color: #f5d08a; }
+	.alert.blue { background: #1a293a; color: #b9d4f0; }
+	.good { color: var(--green) !important; } .mid { color: var(--amber) !important; } .bad { color: var(--red) !important; }
+	.sms { font-size: 11px; color: var(--dim); line-height: 1.5; max-height: 54px; overflow: hidden; margin-top: 4px; }
+</style>
+</head>
+<body>
+<header class="heading"><strong>流量</strong><span id="subtitle"></span></header>
+<div id="feedback" class="alert" hidden></div>
+<div id="cut" class="alert red" hidden>流量已用完，已自动断开移动数据。下面可以恢复上网（本周期内不再自动断开，继续用会产生超额费用）。</div>
+
+<section class="card">
+	<div class="label">套餐剩余</div>
+	<div class="big" id="left">—</div>
+	<div class="bar"><i id="bar"></i></div>
+	<div class="row"><span>已用 <b id="used">—</b></span><span>共 <b id="total">—</b></span></div>
+	<div class="row"><span>今日 <b id="today">—</b></span><span id="cycle"></span></div>
+</section>
+
+<button id="query">立即向运营商查询</button>
+<button id="resume" class="danger" hidden>恢复上网（本周期不再断网）</button>
+<button id="protect" hidden>重新开启用完自动断网</button>
+
+<section class="card">
+	<div class="row" style="margin-top:0"><span>上次查询</span><b id="last-at">—</b></div>
+	<div class="row"><span>用完自动断网</span><b id="protect-state">—</b></div>
+	<div class="row"><span>自动查询</span><b id="auto">—</b></div>
+	<div class="sms" id="sms"></div>
+</section>
+
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let st = null, focus = 0, busy = false, timer = null;
+
+const GB = (b) => b == null ? '—' : ((Number(b) || 0) / 1e9).toFixed(2) + ' GB';
+function say(text, cls) {
+	const f = $('feedback');
+	f.textContent = text;
+	f.className = 'alert ' + (cls || 'blue');
+	f.hidden = !text;
+	if (text) setTimeout(() => { if (f.textContent == text) f.hidden = true; }, 6000);
+}
+
+function focusables() { return [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null); }
+function setFocus(i) {
+	document.querySelectorAll('button.focus').forEach((b) => b.classList.remove('focus'));
+	const all = focusables();
+	if (!all.length) return;
+	focus = Math.max(0, Math.min(i, all.length - 1));
+	all[focus].classList.add('focus');
+	all[focus].scrollIntoView({ block: 'nearest' });
+}
+
+function render() {
+	const s = st ?? {};
+	const has = s.limit > 0;
+	const pct = has ? Math.max(0, Math.min(100, s.percent_left)) : null;
+	const cls = !has ? '' : s.over ? 'bad' : s.low ? 'mid' : 'good';
+	$('left').innerHTML = has ? `<span class="${cls}">${((Number(s.remaining) || 0) / 1e9).toFixed(2)}</span><small>GB · ${pct.toFixed(0)}%</small>`
+		: '<small>还没有套餐数据，先查询一次</small>';
+	$('bar').style.width = has ? pct + '%' : '0';
+	$('bar').style.background = s.over ? 'var(--red)' : s.low ? 'var(--amber)' : 'var(--green)';
+	$('used').textContent = GB(s.used);
+	$('total').textContent = has ? GB(s.limit) : '—';
+	$('today').textContent = GB(s.today);
+	$('cycle').textContent = s.cycle_text ? '周期 ' + s.cycle_text : '';
+	$('subtitle').textContent = s.last?.carrier ?? '';
+
+	$('cut').hidden = !s.cut;
+	$('resume').hidden = !(s.over && s.protect && !s.paused);
+	$('protect').hidden = !(s.paused);
+	$('query').textContent = s.querying ? '正在查询…（等运营商短信回复，约半分钟）' : '立即向运营商查询';
+	$('query').disabled = !!s.querying;
+
+	const last = s.last;
+	$('last-at').innerHTML = !last ? '还没有查询过'
+		: last.ok ? (s.last_at ?? '') : `<span class="bad">${s.last_at ?? ''} 失败</span>`;
+	$('protect-state').innerHTML = !s.protect ? '<span class="mid">已关闭</span>'
+		: s.paused ? '<span class="mid">本周期已暂停</span>' : '<span class="good">已开启</span>';
+	$('auto').textContent = s.auto_query ? `每 ${s.query_hours} 小时` : '已关闭';
+	const sms = $('sms');
+	sms.textContent = last && !last.ok ? '原因：' + (last.error ?? '') : last?.text ? '运营商回复：' + last.text : '';
+	setFocus(focus);
+}
+
+async function refresh() {
+	try { st = await e5.api('/status'); } catch (e) { say('读取失败：' + (e.message || e), 'red'); }
+	render();
+	clearTimeout(timer);
+	timer = setTimeout(refresh, st?.querying ? 2000 : 8000);
+}
+
+async function act(path, okText) {
+	if (busy) return;
+	busy = true;
+	try {
+		await e5.api(path, { body: {} });
+		if (okText) say(okText);
+	} catch (e) { say(e.message || String(e), 'red'); }
+	finally { busy = false; }
+	refresh();
+}
+
+$('query').onclick = () => { if (!st?.querying) act('/query', '已发出查询短信，等运营商回复…'); };
+$('resume').onclick = () => act('/resume', '已恢复：约 20 秒内接回移动数据，本周期不再自动断开');
+$('protect').onclick = () => act('/protect', '已重新开启用完自动断网');
+
+e5.onKey((k) => {
+	const all = focusables();
+	if (k.kind == 'up') { setFocus(focus - 1); return true; }
+	if (k.kind == 'down') { setFocus(focus + 1); return true; }
+	if (k.kind == 'ok' && all[focus]) { e5.press(all[focus]); return true; }
+	return false;
+});
+
+render();
+refresh();
+</script>
+</body>
+</html>
