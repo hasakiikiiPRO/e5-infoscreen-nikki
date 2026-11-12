@@ -32,6 +32,9 @@
 	.alert { border-radius: 10px; padding: 8px 11px; font-size: 12px; line-height: 1.5; flex-shrink: 0; }
 	.alert.red { background: #402229; color: #ffb0b0; } .alert.blue { background: #1a293a; color: #b9d4f0; }
 	.good { color: var(--green); } .mid { color: var(--amber); } .bad { color: var(--red); }
+	button.side { display: flex; justify-content: space-between; align-items: center; text-align: left; }
+	.pill { font-size: 12px; padding: 2px 9px; border-radius: 10px; }
+	.pill.on { background: #123826; color: var(--green); } .pill.off { background: #222c39; color: var(--dim); }
 </style>
 </head>
 <body>
@@ -46,6 +49,13 @@
 
 <div class="modes" id="modes"><button data-mode="auto">自动</button><button data-mode="home">一直在家</button><button data-mode="away">一直在外</button></div>
 <button id="check">立即检查家里 WiFi</button>
+<button id="sidegw" class="side"><span>旁路由（在家给手机翻墙）</span><span id="sidegw-pill" class="pill">—</span></button>
+<section class="card" id="sidegw-card" hidden>
+	<div class="label">手机 WiFi 设置里改成静态 IP，填：</div>
+	<div class="row"><span>网关</span><b id="sg-gw">—</b></div>
+	<div class="row"><span>DNS</span><b id="sg-dns">—</b></div>
+	<div class="sub" id="sg-note"></div>
+</section>
 
 <section class="card">
 	<div class="row" style="margin-top:0"><span>记住的家附近基站</span><b id="cells">—</b></div>
@@ -102,6 +112,14 @@ function render() {
 	document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('sel', b.dataset.mode == s.setting));
 	$('check').disabled = !!s.checking || s.mode == 'home' || s.mode == 'off';
 	$('check').textContent = s.checking ? '正在检查…（热点会中断几秒）' : '立即检查家里 WiFi';
+	$('sidegw-pill').textContent = s.sidegw ? '已开启' : '已关闭';
+	$('sidegw-pill').className = 'pill ' + (s.sidegw ? 'on' : 'off');
+	$('sidegw-card').hidden = !s.sidegw;
+	$('sg-gw').textContent = s.sidegw_ip ?? '（回到家连上 WiFi 后分配）';
+	$('sg-dns').textContent = s.sidegw_ip ?? '—';
+	$('sg-note').textContent = s.sidegw_ip
+		? 'IP 填手机现在的 IP（WiFi 详情里能看到），子网掩码 255.255.255.0（前缀 24）。E5 离家后要把手机改回"自动（DHCP）"。'
+		: '';
 	$('cells').textContent = s.cells_known != null ? s.cells_known + ' 个' : '—';
 	$('last-look').textContent = !s.last_look ? '还没有'
 		: s.last_look + (s.last_signal != null ? `（找到 ${s.last_signal} dBm）` : '（没找到）');
@@ -124,6 +142,7 @@ async function act(path, body, okText) {
 }
 
 $('check').onclick = () => act('/check', {}, '检查中：热点暂停几秒去找家里 WiFi');
+$('sidegw').onclick = () => act('/sidegw', { on: !st?.sidegw }, st?.sidegw ? '旁路由已关闭，约 15 秒内全部撤销' : '旁路由已开启，约 15 秒内生效');
 document.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => {
 	const m = b.dataset.mode;
 	if (st?.setting == m) return;

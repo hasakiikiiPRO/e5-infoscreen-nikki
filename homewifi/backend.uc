@@ -85,7 +85,8 @@ return function(ctx) {
 			signal: s.signal, lost: s.lost ?? 0, near: s.near, reason: s.reason,
 			since: stamp(s.since), last_look: stamp(s.last_look), last_signal: s.last_signal,
 			held_until: stamp(s.held_until), cells_known: length(keys(cells ?? {})),
-			checking: !!stat(`${RUN}/check-now`), service: service_running(), fresh: time() - (s.at ?? 0) < 60 };
+			checking: !!stat(`${RUN}/check-now`), service: service_running(), fresh: time() - (s.at ?? 0) < 60,
+			sidegw: c.get('e5-plugin-homewifi', 'settings', 'sidegw') == '1', sidegw_ip: s.sidegw_ip, sidegw_net: s.sidegw_net };
 	}
 
 	return {
@@ -112,6 +113,19 @@ return function(ctx) {
 			c.set('e5-plugin-homewifi', 'settings', 'mode', m);
 			if (!c.commit('e5-plugin-homewifi')) return fail('保存失败', 500);
 			ctx.log(`mode ${m}`);
+			return { ok: true };
+		},
+		'POST /sidegw': function(req) {
+			let on = req.body?.on;
+			if (type(on) != 'bool') return fail('参数不对', 400);
+			let c = ctx.uci();
+			if (!c.get('e5-plugin-homewifi', 'settings')) {
+				if (!stat('/etc/config/e5-plugin-homewifi')) writefile('/etc/config/e5-plugin-homewifi', '');
+				c.set('e5-plugin-homewifi', 'settings', 'settings');
+			}
+			c.set('e5-plugin-homewifi', 'settings', 'sidegw', on ? '1' : '0');
+			if (!c.commit('e5-plugin-homewifi')) return fail('保存失败', 500);
+			ctx.log(`side gateway ${on ? 'on' : 'off'}`);
 			return { ok: true };
 		},
 		'GET /notifications': function(req) {

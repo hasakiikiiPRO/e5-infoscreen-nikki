@@ -1,22 +1,69 @@
 {
 	"id": "homewifi",
 	"api_version": 2,
-	"version": "1.3",
-	"name": { "zh": "在家", "en": "Home WiFi" },
-	"description": { "zh": "连得上家里 WiFi 就关热点用家里网络，出门后自动开热点", "en": "On the home WiFi when it is in reach, the hotspot back once it is gone" },
+	"version": "1.4",
+	"name": {
+		"zh": "在家",
+		"en": "Home WiFi"
+	},
+	"description": {
+		"zh": "连得上家里 WiFi 就关热点用家里网络，出门后自动开热点",
+		"en": "On the home WiFi when it is in reach, the hotspot back once it is gone"
+	},
 	"entry": "index.html",
 	"order": 22,
 	"notifications": true,
 	"settings": [
 		{
-			"id": "mode", "type": "choice", "uci": "e5-plugin-homewifi.settings.mode", "default": "auto",
-			"label": { "zh": "在家 / 在外", "en": "Home / away" },
-			"note": { "zh": "自动：连得上家里 WiFi 就在家，连不上就开热点", "en": "Auto: home while the home WiFi is in reach" },
+			"id": "mode",
+			"type": "choice",
+			"uci": "e5-plugin-homewifi.settings.mode",
+			"default": "auto",
+			"label": {
+				"zh": "在家 / 在外",
+				"en": "Home / away"
+			},
+			"note": {
+				"zh": "自动：连得上家里 WiFi 就在家，连不上就开热点",
+				"en": "Auto: home while the home WiFi is in reach"
+			},
 			"options": [
-				{ "value": "auto", "label": { "zh": "自动", "en": "Auto" } },
-				{ "value": "home", "label": { "zh": "一直在家（连家里 WiFi）", "en": "Always home" } },
-				{ "value": "away", "label": { "zh": "一直在外（开热点）", "en": "Always away" } }
+				{
+					"value": "auto",
+					"label": {
+						"zh": "自动",
+						"en": "Auto"
+					}
+				},
+				{
+					"value": "home",
+					"label": {
+						"zh": "一直在家（连家里 WiFi）",
+						"en": "Always home"
+					}
+				},
+				{
+					"value": "away",
+					"label": {
+						"zh": "一直在外（开热点）",
+						"en": "Always away"
+					}
+				}
 			]
+		},
+		{
+			"id": "sidegw",
+			"type": "toggle",
+			"uci": "e5-plugin-homewifi.settings.sidegw",
+			"default": "0",
+			"label": {
+				"zh": "旁路由（在家给手机翻墙）",
+				"en": "Side gateway at home"
+			},
+			"note": {
+				"zh": "在家时手机把网关和 DNS 设成 E5 的地址即可自动翻墙；E5 在家不会休眠，建议插电",
+				"en": "At home devices with the E5 as gateway and DNS get the proxy; the E5 stays awake"
+			}
 		}
 	]
 }

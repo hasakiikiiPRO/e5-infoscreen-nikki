@@ -360,6 +360,87 @@ function step() {
 	}
 }
 
+// 旁路由 (side gateway), a switch: at home, devices on the home WiFi that
+// set their gateway and DNS to the E5 get Nikki's transparent proxy.  On, it
+// puts in place -- each named, all taken out again when it goes off:
+//   network.sidegw    a fixed address of its own on the home network (an
+//                     alias of wwan: the router needs no change), .253 or the
+//                     next free one below
+//   firewall rules    from the home network only: DNS and Nikki's ports in,
+//                     forwarding (to Nikki's tun) -- nothing else of the E5's
+//   nikki             wwan among the proxy's inbound interfaces
+//   a wake lock       at home: a sleeping E5 would cut those devices off
+const SIDEGW = DIR + '/sidegw.json';
+const SIDE_LOCK = 'e5-homewifi-sidegw';
+function wwan_net() {
+	let st = null;
+	try { st = json(sh('ifstatus wwan 2>/dev/null')); } catch (e) {}
+	let a = st?.['ipv4-address']?.[0];
+	if (!a?.address || a.mask != 24) return null;
+	let o = split(a.address, '.');
+	return { own: a.address, prefix: `${o[0]}.${o[1]}.${o[2]}`, net: `${o[0]}.${o[1]}.${o[2]}.0/24` };
+}
+function side_wake(on) {
+	writefile(on ? '/sys/power/wake_lock' : '/sys/power/wake_unlock', SIDE_LOCK);
+}
+function sidegw_apply(n) {
+	let ip = null;
+	for (let last = 253; last >= 240; last--) {
+		let cand = `${n.prefix}.${last}`;
+		if (cand == n.own) continue;
+		// (someone answering there: taken)
+		if (system(`ping -c 1 -W 1 ${cand} >/dev/null 2>&1`) != 0) { ip = cand; break; }
+	}
+	if (!ip) { log('side gateway: no free address from .253 down to .240'); return null; }
+	let cmds = [
+		'uci set network.sidegw=interface', "uci set network.sidegw.proto=static",
+		"uci set network.sidegw.device='@wwan'", `uci set network.sidegw.ipaddr=${ip}`,
+		'uci set network.sidegw.netmask=255.255.255.0', 'uci commit network',
+		'uci set firewall.e5_sidegw_in=rule', "uci set firewall.e5_sidegw_in.name='e5 side gateway in'",
+		'uci set firewall.e5_sidegw_in.src=wan', `uci set firewall.e5_sidegw_in.src_ip=${n.net}`,
+		"uci set firewall.e5_sidegw_in.proto='tcp udp'", "uci set firewall.e5_sidegw_in.dest_port='53 1053 7890 7891 7892'",
+		'uci set firewall.e5_sidegw_in.target=ACCEPT',
+		'uci set firewall.e5_sidegw_fwd=rule', "uci set firewall.e5_sidegw_fwd.name='e5 side gateway forward'",
+		'uci set firewall.e5_sidegw_fwd.src=wan', "uci set firewall.e5_sidegw_fwd.dest='*'",
+		`uci set firewall.e5_sidegw_fwd.src_ip=${n.net}`, 'uci set firewall.e5_sidegw_fwd.target=ACCEPT',
+		'uci commit firewall',
+		'uci -q del_list nikki.proxy.lan_inbound_interface=wwan', 'uci add_list nikki.proxy.lan_inbound_interface=wwan',
+		'uci commit nikki',
+		'/etc/init.d/network reload', '/etc/init.d/firewall reload',
+		// (the proxy's nft rules are made at its start)
+		'setsid /etc/init.d/nikki restart'
+	];
+	system(join(' >/dev/null 2>&1; ', cmds) + ' >/dev/null 2>&1 &');
+	let cur = { ip, net: n.net, at: time() };
+	save(SIDEGW, cur);
+	log(`side gateway on: ${ip} (devices on ${n.net} set gateway and DNS to it)`);
+	return cur;
+}
+function sidegw_remove() {
+	system('uci -q delete network.sidegw; uci commit network; ' +
+		'uci -q delete firewall.e5_sidegw_in; uci -q delete firewall.e5_sidegw_fwd; uci commit firewall; ' +
+		'uci -q del_list nikki.proxy.lan_inbound_interface=wwan; uci commit nikki; ' +
+		'/etc/init.d/network reload; /etc/init.d/firewall reload; setsid /etc/init.d/nikki restart >/dev/null 2>&1 &');
+	unlink(SIDEGW);
+	side_wake(false);
+	log('side gateway off: all of it taken out');
+}
+function sidegw_sync(mode) {
+	let want = setting('sidegw', '0') == '1', cur = load(SIDEGW, null);
+	if (!want) {
+		if (cur) sidegw_remove();
+		return;
+	}
+	if (mode == 'home') {
+		if (!cur) {
+			let n = wwan_net();
+			if (n) cur = sidegw_apply(n);
+		}
+		side_wake(!!cur);
+	} else side_wake(false);
+	status({ sidegw: true, sidegw_ip: cur?.ip, sidegw_net: cur?.net });
+}
+
 // the lock screen's mark out of the screen's page, the screen restarted
 function unpatch_index() {
 	const INDEX = '/usr/share/e5-infoscreen/www/index.html';
@@ -374,6 +455,7 @@ function unpatch_index() {
 
 function removed() {
 	unpatch_index();
+	if (load(SIDEGW, null)) sidegw_remove();
 	// no stranding: the hotspot as the app found it, the client off
 	if (wifi_state() != 'off' && wifi_state() != 'hotspot') { set_wifi(false); hotspot_back(); }
 	unlink(STATE);
@@ -393,6 +475,9 @@ let gone = 0;
 while (true) {
 	gone = stat(`${APP}/manifest.json`) ? 0 : gone + 1;
 	if (gone >= GONE_LOOPS) removed();
-	if (!gone) step();
+	if (!gone) {
+		step();
+		sidegw_sync(st.mode);
+	}
 	system(`sleep ${LOOP_S}`);
 }
