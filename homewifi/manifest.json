@@ -1,7 +1,7 @@
 {
 	"id": "homewifi",
 	"api_version": 2,
-	"version": "1.2",
+	"version": "1.3",
 	"name": { "zh": "在家", "en": "Home WiFi" },
 	"description": { "zh": "连得上家里 WiFi 就关热点用家里网络，出门后自动开热点", "en": "On the home WiFi when it is in reach, the hotspot back once it is gone" },
 	"entry": "index.html",

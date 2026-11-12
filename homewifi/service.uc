@@ -262,6 +262,21 @@ function go_home(why, seen, keep) {
 	return false;
 }
 
+// At home the hotspotdata app keeps the modem registered for SMS and calls in
+// its mode "data" -- but it looks only once, and right after a boot the modem
+// is still probing then: it stays disabled, calls end at once.  Enabled here.
+let modem_checked = 0;
+function keep_modem() {
+	let now = time();
+	if (now - modem_checked < 120) return;
+	modem_checked = now;
+	if (cursor().get('e5-plugin-hotspotdata', 'settings', 'mode') != 'data') return;
+	let st = trim(sh("mmcli -m any -K 2>/dev/null | sed -n 's/^modem\\.generic\\.state *: *//p' | head -n 1"));
+	if (st != 'disabled') return;
+	log('at home, modem disabled (calls and SMS would not work): enabling it');
+	system('mmcli -m any --timeout=30 --enable >/dev/null 2>&1');
+}
+
 let heal_fails = 0;
 function step() {
 	let want = setting('mode', 'auto'), ws = wifi_state(), now = time(), asked = !!stat(REQ);
@@ -285,6 +300,7 @@ function step() {
 		let l = at_home_link();
 		if (l) {
 			lost_since = null;
+			keep_modem();
 			if (now - last_learn >= LEARN_S) { learn(cells()); last_learn = now; }
 			status({ mode: 'home', state: ws, signal: l.signal, lost: 0, forced: want == 'home' });
 			return;
