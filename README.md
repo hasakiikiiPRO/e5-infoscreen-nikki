@@ -1,11 +1,12 @@
-# 荣悦 E5 信息屏应用：代理（Nikki）与流量
+# 荣悦 E5 信息屏应用：代理（Nikki）、流量、在家
 
 给荣悦 E5 OpenWrt 的信息屏（机身上那块 320×480 小屏）用的两个应用，都可以直接在设备上操作，不用打开电脑或手机浏览器：
 
 - **「代理」**（`nikki/`）：控制 [Nikki](https://github.com/nikkinikki-org/OpenWrt-nikki)（mihomo 透明代理）。
 - **「流量」**（`dataplan/`）：自动发短信向运营商查询套餐，显示剩余流量（锁屏上也有），快用完时提醒，用完自动断开移动数据。
+- **「在家」**（`homewifi/`）：能连上家里 WiFi 时，E5 关掉热点、改用家里网络（不耗 5G 流量，配合热点省电休眠）；家里 WiFi 断开后自动重新打开热点。
 
-两个应用互不依赖，按需安装即可。
+三个应用互不依赖，按需安装即可。
 
 ## 「代理」
 
@@ -84,6 +85,59 @@
   - 应用卸载后，服务会从 procd 注销、删除自己的 init 脚本，并把锁屏改动还原。
 - `backend.uc`：屏幕页面和通知用的接口。它负责安装后台服务；服务代码有变化时会重启服务；锁屏那一行在系统升级后被覆盖掉，也会重新加回来。这些检查每分钟一次，挂在信息屏的通知轮询上执行。
 - `lock-card.html`：锁屏那一行，插在信息屏页面 `index.html` 里 `app.js` 之后，和「热点省电」插 CPU 卡片的方式相同。
+- `index.html`：应用页面。
+
+## 「在家」
+
+### 功能
+
+- **在家**（E5 连着家里 WiFi）：热点关闭，E5 通过家里宽带上网。热点关闭后，「热点省电」会自动断开 5G 数据，熄屏后让设备休眠。
+  - **判断离家**：家里 WiFi **连续断开 60 秒**才算离家，然后重新打开热点。
+  - 只按醒着的时间计算：设备刚从休眠中醒来时，WiFi 会短暂断开，这次断开不计入。
+  - "连上"指的是已关联、并且 WWAN 已经拿到地址。只关联上但拿不到地址的，不算连上。
+- **在外**（热点开着）：E5 的无线芯片不能同时做热点和连 WiFi，开着热点时扫描不到家里 WiFi。
+  - 所以只有看到**家附近的基站**时，才每 2.5 分钟暂停热点 3～4 秒去扫描一次。连续 3 次没找到，就改为每 10 分钟一次。
+  - 家附近的基站是在家时自动记录的，不需要手动设置。
+  - **离家较远时完全不扫描**，热点不会受到任何影响。
+  - 扫到家里 WiFi（信号强于 −85 dBm）就切换过去。40 秒内没连上，就恢复热点，10 分钟内不再尝试。
+- **防止来回切换**：
+  - 连上家里 WiFi 后 10 分钟内又断开，会暂停自动回家 30 分钟。
+  - 在家时手动打开热点，同样暂停 30 分钟。
+  - 手动关闭热点（关闭无线）时，自动切换全部暂停。
+- **保证有网**：
+  - 每次切换后，都会确认热点确实已经在发射信号，否则重试。
+  - 热点在配置上是开着的、实际却不在线时，后台会自动修复。
+  - 扫描中途服务被停止或者应用被卸载，都会把热点恢复。
+- **锁屏**：网络状态那一行显示「在家 · 已连 <WiFi 名>」或「· 在外」，不会增加锁屏的高度。
+- **模式**：自动 / 一直在家 / 一直在外，在应用里或「高级」设置里切换。
+
+### 首次配置（一次性，用 SSH 执行）
+
+家里 WiFi 的名称和密码只保存在设备的无线配置里，应用代码中不包含这些信息。
+
+```sh
+uci set network.wwan=interface; uci set network.wwan.proto=dhcp; uci set network.wwan.metric=20; uci commit network
+uci add_list firewall.@zone[1].network=wwan; uci commit firewall          # @zone[1] 是 wan 区
+uci set wireless.homewifi_sta=wifi-iface
+uci set wireless.homewifi_sta.device=radio0; uci set wireless.homewifi_sta.mode=sta
+uci set wireless.homewifi_sta.network=wwan;  uci set wireless.homewifi_sta.ifname=wlan0
+uci set wireless.homewifi_sta.ssid='家里WiFi名'; uci set wireless.homewifi_sta.encryption=psk2
+uci set wireless.homewifi_sta.key='家里WiFi密码'; uci set wireless.homewifi_sta.disabled=1
+uci commit wireless
+# 在家时保留短信和电话（热点省电默认的"关闭蜂窝"模式会让短信电话也收不到）：
+uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotdata
+/etc/init.d/network reload; /etc/init.d/firewall reload
+```
+
+热点必须是 `wireless.default_radio0`（mode ap，ifname wlan0）。装好应用后，在家里点一次「立即检查家里 WiFi」：E5 会切到家里 WiFi，并开始记录家附近的基站。
+
+### 实现
+
+- `service.uc` + `homewifi.init`：procd 后台服务，每 15 秒执行一次状态机。
+  - 切换方式：修改 uci 里两个 wifi-iface 的 `disabled`，然后依次执行 `wifi reload` 和 `wifi up radio0`。单独执行 `reload` 时，不会重新启动之前被 `wifi down` 停掉的无线芯片。
+  - 扫描时先执行 `wifi down radio0`，再用 `iw` 扫描。比较 SSID 时会按照 `iw` 的转义规则处理，所以中文名称的 WiFi 也能匹配。
+- `backend.uc`：负责状态查询、立即检查和切换模式；同时安装并维护后台服务（扫描进行中不会重启服务）。
+- `lock-mark.html`：锁屏标识，插入到 `index.html` 中 `app.js` 之后；后台服务不在运行时不显示。
 - `index.html`：应用页面。
 
 ## 共同

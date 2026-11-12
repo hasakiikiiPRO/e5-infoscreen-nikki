@@ -1,7 +1,7 @@
 {
 	"id": "dataplan",
 	"api_version": 2,
-	"version": "1.2",
+	"version": "1.3",
 	"name": { "zh": "流量", "en": "Data plan" },
 	"description": { "zh": "短信向运营商查套餐流量，显示剩余，快用完提醒，用完自动断开数据", "en": "Asks the carrier for the plan by SMS, shows what is left, warns and cuts data when it runs out" },
 	"entry": "index.html",

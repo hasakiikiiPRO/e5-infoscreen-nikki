@@ -284,7 +284,8 @@ function removed() {
 	if (cut) { unlink(CUT); data_up(cut.iface ?? data_iface(), 'app removed'); }
 	log('app removed: stopping');
 	// (procd respawns an instance that just exits: the service goes from procd first)
-	system(`ubus call service delete '{"name":"e5-dataplan"}'; /etc/init.d/e5-dataplan disable; rm -f /etc/init.d/e5-dataplan ${RUNNING}`);
+	// (the init script goes first: the service's delete ends this process)
+	system(`/etc/init.d/e5-dataplan disable; rm -f /etc/init.d/e5-dataplan ${RUNNING}; ubus call service delete '{"name":"e5-dataplan"}'`);
 	exit(0);
 }
 

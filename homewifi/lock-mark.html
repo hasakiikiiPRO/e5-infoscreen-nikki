@@ -1,0 +1,55 @@
+<!-- BEGIN e5-homewifi (the homewifi app, /etc/e5-infoscreen/plugins/homewifi) -->
+<script>
+// The lock screen's network line with 在家 / 在外 from the homewifi app's
+// GET /status, every 30 s while the screen is lit.  At home mobile data is
+// off on purpose: the line says the home WiFi instead of "等待网络连接", its
+// dot stays green.  In the line itself: the lock screen has no height to spare.
+// Without the app (404) the mark goes.
+(function () {
+	const API = '/api/plugins/homewifi/status', EVERY = 30000;
+	const css = document.createElement('style');
+	css.textContent =
+		'#lock-home { color: #b1c4c7; } #lock-home:empty { display: none; }' +
+		'body.at-home #lock-network { display: none; }' +
+		'body.at-home .lock-online i, body.at-home .lock-online.offline i { background: var(--accent); }';
+	document.head.appendChild(css);
+
+	let mark = null, gone = false, timer = null;
+	function place() {
+		const net = document.getElementById('lock-network');
+		if (!net) return false;
+		mark = document.createElement('span');
+		mark.id = 'lock-home';
+		net.after(mark);
+		return true;
+	}
+	const lit = () => !document.hidden && !(typeof blank !== 'undefined' && blank);
+	function render(s) {
+		// (a stale answer -- the service gone -- shows nothing rather than an old 在家)
+		if (s && !(s.fresh && s.service)) s = null;
+		const home = s && s.mode == 'home';
+		document.body.classList.toggle('at-home', !!home);
+		mark.textContent = home ? '在家 · 已连 ' + (s.ssid || '家里 WiFi') + (s.lost ? '（信号丢失）' : '')
+			: s && s.mode == 'away' ? '· 在外' : '';
+	}
+	async function poll() {
+		clearTimeout(timer);
+		if (gone || !mark) return;
+		if (lit()) {
+			try {
+				const r = await fetch(API, { cache: 'no-store' });
+				if (r.status == 404) { gone = true; mark.remove(); document.body.classList.remove('at-home'); return; }
+				if (r.ok) render(await r.json());
+			} catch (e) { /* the next poll */ }
+		}
+		timer = setTimeout(poll, EVERY);
+	}
+	(function start(n) {
+		if (place()) poll();
+		else if (n < 20) setTimeout(() => start(n + 1), 500);
+	})(0);
+	let wasLit = lit();
+	setInterval(() => { const now = lit(); if (now && !wasLit) poll(); wasLit = now; }, 1000);
+})();
+</script>
+<!-- END e5-homewifi -->

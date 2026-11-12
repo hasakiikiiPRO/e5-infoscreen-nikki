@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>在家</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8;
+		--green:#42d391; --red:#f26a6d; --amber:#f0b44c; --blue:#6aa8ff; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; overflow-y: auto; scrollbar-width: none; }
+	[hidden] { display: none !important; }
+	button { font: inherit; color: inherit; border: 0; background: var(--card); border-radius: 10px; cursor: none; outline: none;
+		padding: 11px 12px; font-weight: 600; flex-shrink: 0; }
+	button.focus { box-shadow: 0 0 0 2px #dce8ff; }
+	button:active { filter: brightness(1.25); }
+	button:disabled { opacity: .45; }
+	.heading { display: flex; align-items: center; justify-content: space-between; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; }
+	.heading span { font-size: 11px; color: var(--dim); }
+	.card { background: var(--card); border-radius: 10px; padding: 10px 12px; flex-shrink: 0; }
+	.label { color: var(--dim); font-size: 11px; }
+	.big { font-size: 28px; font-weight: 700; margin-top: 2px; }
+	.sub { color: var(--dim); font-size: 12px; margin-top: 4px; line-height: 1.5; }
+	.row { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-top: 4px; }
+	.row b { color: var(--text); font-weight: 500; }
+	.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; flex-shrink: 0; }
+	.modes button { text-align: center; padding: 8px 0; font-size: 13px; color: var(--dim); }
+	.modes button.sel { background: #1d3a5c; color: #cfe3ff; }
+	.alert { border-radius: 10px; padding: 8px 11px; font-size: 12px; line-height: 1.5; flex-shrink: 0; }
+	.alert.red { background: #402229; color: #ffb0b0; } .alert.blue { background: #1a293a; color: #b9d4f0; }
+	.good { color: var(--green); } .mid { color: var(--amber); } .bad { color: var(--red); }
+</style>
+</head>
+<body>
+<header class="heading"><strong>在家</strong><span id="ssid"></span></header>
+<div id="feedback" class="alert" hidden></div>
+
+<section class="card">
+	<div class="label">现在</div>
+	<div class="big" id="where">—</div>
+	<div class="sub" id="detail"></div>
+</section>
+
+<div class="modes" id="modes"><button data-mode="auto">自动</button><button data-mode="home">一直在家</button><button data-mode="away">一直在外</button></div>
+<button id="check">立即检查家里 WiFi</button>
+
+<section class="card">
+	<div class="row" style="margin-top:0"><span>记住的家附近基站</span><b id="cells">—</b></div>
+	<div class="row"><span>上次在外检查</span><b id="last-look">—</b></div>
+	<div class="sub" id="how">在外时只有回到家附近（看到家附近的基站）才会检查，每次检查热点会中断 3～4 秒。</div>
+</section>
+
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let st = null, focus = 0, busy = false, timer = null;
+
+function say(text, cls) {
+	const f = $('feedback');
+	f.textContent = text;
+	f.className = 'alert ' + (cls || 'blue');
+	f.hidden = !text;
+	if (text) setTimeout(() => { if (f.textContent == text) f.hidden = true; }, 6000);
+}
+function focusables() { return [...document.querySelectorAll('button')].filter((b) => b.offsetParent !== null && !b.disabled); }
+function setFocus(i) {
+	document.querySelectorAll('button.focus').forEach((b) => b.classList.remove('focus'));
+	const all = focusables();
+	if (!all.length) return;
+	focus = Math.max(0, Math.min(i, all.length - 1));
+	all[focus].classList.add('focus');
+	all[focus].scrollIntoView({ block: 'nearest' });
+}
+
+function render() {
+	const s = st ?? {};
+	$('ssid').textContent = s.ssid ? '家里 WiFi：' + s.ssid : '';
+	const where = $('where'), detail = $('detail');
+	if (s.mode == 'home') {
+		where.innerHTML = '<span class="good">在家</span>';
+		detail.textContent = s.lost
+			? `家里 WiFi 信号丢失（已 ${s.lost} 秒），连续 1 分钟连不上就开热点`
+			: `已连 ${s.ssid ?? ''}${s.signal != null ? '，信号 ' + s.signal + ' dBm' : ''}；热点已关，移动数据由热点省电关闭${s.since ? '。' + s.since + ' 起' : ''}`;
+	} else if (s.mode == 'away') {
+		where.innerHTML = '在外 · 热点开';
+		detail.textContent = s.held_until ? `你手动开了热点，${s.held_until} 前不会自动切回家里 WiFi`
+			: s.near ? '在家附近：会定时检查家里 WiFi' : '离家较远：不检查，热点不受影响';
+	} else if (s.mode == 'off') {
+		where.innerHTML = '<span class="mid">热点已手动关闭</span>';
+		detail.textContent = '无线已关闭，自动切换暂停；在状态页打开热点后恢复';
+	} else if (s.mode == 'unset') {
+		where.textContent = '未设置家里 WiFi';
+		detail.textContent = '在 LuCI → 网络 → 无线 里设置 homewifi_sta 的名称和密码';
+	} else {
+		where.textContent = '—';
+		detail.textContent = s.service === false ? '后台服务没有运行' : '读取中…';
+	}
+	document.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('sel', b.dataset.mode == s.setting));
+	$('check').disabled = !!s.checking || s.mode == 'home' || s.mode == 'off';
+	$('check').textContent = s.checking ? '正在检查…（热点会中断几秒）' : '立即检查家里 WiFi';
+	$('cells').textContent = s.cells_known != null ? s.cells_known + ' 个' : '—';
+	$('last-look').textContent = !s.last_look ? '还没有'
+		: s.last_look + (s.last_signal != null ? `（找到 ${s.last_signal} dBm）` : '（没找到）');
+	setFocus(focus);
+}
+
+async function refresh() {
+	try { st = await e5.api('/status'); } catch (e) { say('读取失败：' + (e.message || e), 'red'); }
+	render();
+	clearTimeout(timer);
+	timer = setTimeout(refresh, st?.checking ? 2000 : 5000);
+}
+async function act(path, body, okText) {
+	if (busy) return;
+	busy = true;
+	try { await e5.api(path, { body }); if (okText) say(okText); }
+	catch (e) { say(e.message || String(e), 'red'); }
+	finally { busy = false; }
+	refresh();
+}
+
+$('check').onclick = () => act('/check', {}, '检查中：热点暂停几秒去找家里 WiFi');
+document.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => {
+	const m = b.dataset.mode;
+	if (st?.setting == m) return;
+	act('/mode', { mode: m }, { auto: '已改为自动', home: '已改为一直在家：15 秒内连家里 WiFi', away: '已改为一直在外：15 秒内开热点' }[m]);
+});
+
+e5.onKey((k) => {
+	const all = focusables();
+	if (k.kind == 'up' || k.kind == 'left') { setFocus(focus - 1); return true; }
+	if (k.kind == 'down' || k.kind == 'right') { setFocus(focus + 1); return true; }
+	if (k.kind == 'ok' && all[focus]) { e5.press(all[focus]); return true; }
+	return false;
+});
+
+render();
+refresh();
+</script>
+</body>
+</html>
