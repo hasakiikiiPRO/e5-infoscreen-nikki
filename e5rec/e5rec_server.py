@@ -406,7 +406,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 boost = max(0, min(14, int(self.headers.get('X-Boost') or 8)))
             except ValueError:
                 boost = 8
-            mode = self.headers.get('X-Mode') if self.headers.get('X-Mode') in e5assist.MODES else 'smart'
+            mode = self.headers.get('X-Mode') if self.headers.get('X-Mode') in e5assist.MODES else e5assist.DEFAULT_MODE
             r = e5assist.ask(wav, locked=self.headers.get('X-Locked') == '1', boost_db=boost, mode=mode)
         except Exception as e:
             log(f'assistant: {e}')

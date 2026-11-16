@@ -1,5 +1,11 @@
 """e5assist -- the pocket voice assistant's brain, on the NAS.
 
+Tools it may call, as many rounds as it needs (MAX_ROUNDS): web_search (the user's own
+four-engine search -- Exa, Bing, SearXNG, Grok -- the endpoint Claude Desktop uses,
+websearch.json), DeepSeek's own quick search and page reading, and the recordings a layer at a
+time: which days, a day's summaries, a search through every sentence, a transcript.  From the
+lock screen none of the recordings' tools.
+
 ask(wav) -> {question, answer, wav}: what was said (DeepSeek ASR), an answer
 that will be read aloud (deepseek-flash, web search on, with the recordings'
 summaries and the last two hours of what was said as background), and that
@@ -13,6 +19,7 @@ import subprocess
 import threading
 import wave
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import time
 import urllib.error
 import urllib.request
@@ -26,18 +33,25 @@ VOICE = 'stella'                       # (DeepSeek's two: stella, a woman's voic
 PLACE = '浙江温州'
 MEMORY_S = 10 * 60                     # follow-ups within this long see the earlier turns
 MEMORY_TURNS = 6
-# how hard it thinks (the E5's 思考程度): (model, thinking) -- measured on a planning question:
-# fast 1.5 s and shallow; smart 4 s and well reasoned; best (v4-pro) 12 s, no better than smart
-MODES = {'fast': ('deepseek-flash', False), 'smart': ('deepseek-flash', True), 'best': ('deepseek-v4-pro', True)}
+MAX_ROUNDS = 8                          # tool rounds in one answer
+ANSWER_BUDGET_S = 170                   # (the E5 waits 240 s for everything)
+WEBSEARCH = Path(__file__).resolve().parent / 'websearch.json'
+# how hard it thinks (the E5's 思考程度): (model, thinking effort or None) -- measured on a planning
+# question: none 1.5 s, shallow; high 4 s, well reasoned; max 11.6 s, planned to the hour
+# (v4-pro: 12 s and no better than flash at high, so not offered)
+MODES = {'fast': ('deepseek-flash', None), 'smart': ('deepseek-flash', 'high'), 'max': ('deepseek-flash', 'max')}
+DEFAULT_MODE = 'max'
 RECENT_S = 2 * 3600
 MAX_CONTEXT = 24000
 
 SYSTEM = ('你是用户随身带的口袋语音助手（装在一台叫 E5 的小设备上）。你的回答会被直接朗读出来：'
-          '用口语；先想清楚再答，给出有用的结论和理由，简单问题一两句，一般不超过200字，复杂的安排、分析可以多说一点；'
-          '不要 Markdown、列表符号、编号、链接、表情、括号注释。'
-          '需要实时信息（天气、新闻、价格等）就联网搜索。'
-          '下面附有用户这台设备录下的对话的整理（AI 总结和最近的原话），只有问题和它们有关时才用；'
-          '引用时说清是什么时候说的。录音里没有的不要编。联网搜索时只搜公开信息，绝不把录音里的内容、人名或私事写进搜索词。'
+          '用口语；想清楚再答，该详细就详细，给出有用的结论、理由和具体安排；'
+          '不要 Markdown、列表符号、链接、表情（会被朗读出来）。'
+          '需要实时信息就搜：简单的（天气、时间、单个事实）用自带的快速搜索；要全面、要核对、要最新动态或多方说法，'
+          '用 web_search（四个搜索引擎一起搜），必要时再读网页原文。'
+          '这台设备一直在录用户身边的对话：问到用户自己说过什么、答应过什么、某天做了什么，就用 recordings_ 开头的工具一层层查'
+          '（先看有哪些日子或当天总结，再搜关键词，最后读原文），引用时说清是什么时候说的；录音里没有的不要编。'
+          '搜索时只搜公开信息，绝不把录音里的内容、人名或私事写进搜索词。'
           '听不清或问题不完整就请用户再说一遍。')
 LOCKED_NOTE = ('（这次是在锁屏上问的：没有附带用户的录音。问到用户自己说过什么、答应过什么时，'
                '请他解锁后再问，不要猜。）')
@@ -63,7 +77,7 @@ def background(locked=False):
     c = e5rec.db()
     e5sum.tables(c)
     out = [f'现在是 {time.strftime("%Y-%m-%d %H:%M 星期", time.localtime(now))}{"一二三四五六日"[time.localtime(now).tm_wday]}，用户在{PLACE}。']
-    for d in range(2, -1, -1):
+    for d in range(0, -1, -1):          # (today; the other days through the recordings_ tools)
         day = time.strftime('%Y-%m-%d', time.localtime(now - d * 86400))
         row = c.execute('select json from daily where day=?', (day,)).fetchone()
         recs = e5sum.day_rows(c, day)
@@ -80,13 +94,120 @@ def background(locked=False):
             out.extend(lines)
     said = c.execute('select start, text from segments where start > ? order by start', (int(now - RECENT_S),)).fetchall()
     if said:
-        out.append('【最近两小时的原话】')
+        out.append('【最近两小时的原话】（更早的用 recordings_ 工具查）')
         out.extend(f'{time.strftime("%H:%M", time.localtime(t))} {x}' for t, x in said)
     text = '\n'.join(out)
     return text[-MAX_CONTEXT:]
 
 
-def answer(question, locked=False, mode='smart'):
+def web_search(query):
+    c = json.loads(WEBSEARCH.read_text())
+    req = urllib.request.Request(c['url'], data=json.dumps({'q': query}).encode(), method='POST',
+                                 headers={**c['headers'], 'Content-Type': 'application/json'})
+    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=40) as r:
+        res = json.load(r).get('results') or []
+    return [{'title': x.get('title'), 'url': x.get('url'), 'snippet': (x.get('snippet') or '')[:400], 'engine': x.get('source')}
+            for x in res[:10]]
+
+
+def _clock(t):
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t))
+
+
+def recordings_days(limit=30):
+    c = e5rec.db()
+    e5sum.tables(c)
+    rows = c.execute('select r.day, count(*), sum(r.seconds), d.json from recordings r left join daily d on d.day = r.day '
+                     'group by r.day order by r.day desc limit ?', (int(limit),)).fetchall()
+    return [{'date': d, 'recordings': n, 'minutes': round((s or 0) / 60), 'day_title': (json.loads(j) or {}).get('title') if j else None}
+            for d, n, s, j in rows]
+
+
+def recordings_day(date):
+    c = e5rec.db()
+    e5sum.tables(c)
+    d = c.execute('select json from daily where day=?', (date,)).fetchone()
+    recs = []
+    for name, start, seconds, _n, sj in e5sum.day_rows(c, date):
+        s = json.loads(sj) if sj else {}
+        if s.get('empty'):
+            continue
+        recs.append({'name': name, 'from': _clock(start)[11:16], 'to': _clock(start + (seconds or 0))[11:16],
+                     'title': s.get('title'), 'summary': s.get('summary'), 'todos': s.get('todos') or []})
+    return {'date': date, 'day_summary': json.loads(d[0]) if d else None, 'recordings': recs}
+
+
+def recordings_search(query, date_from=None, date_to=None):
+    words = [w for w in str(query).split() if w][:5]
+    if not words:
+        return []
+    q, p = [], []
+    for w in words:
+        q.append('text like ?')
+        p.append(f'%{w}%')
+    if date_from:
+        q.append('start >= ?')
+        p.append(time.mktime(time.strptime(date_from, '%Y-%m-%d')))
+    if date_to:
+        q.append('start < ?')
+        p.append(time.mktime(time.strptime(date_to, '%Y-%m-%d')) + 86400)
+    rows = e5rec.db().execute('select name, start, text from segments where ' + ' and '.join(q)
+                              + ' order by start desc limit 40', p).fetchall()
+    return [{'time': _clock(t), 'recording': n, 'text': x} for n, t, x in rows]
+
+
+def recordings_transcript(name=None, date=None, time_from=None, time_to=None):
+    c = e5rec.db()
+    if name:
+        rows = c.execute('select start, text from segments where name=? order by rel', (name,)).fetchall()
+    elif date:
+        lo = time.mktime(time.strptime(f'{date} {time_from or "00:00"}', '%Y-%m-%d %H:%M'))
+        hi = time.mktime(time.strptime(f'{date} {time_to}', '%Y-%m-%d %H:%M')) + 59 if time_to else \
+            time.mktime(time.strptime(date, '%Y-%m-%d')) + 86400
+        rows = c.execute('select start, text from segments where start >= ? and start < ? order by start', (lo, hi)).fetchall()
+    else:
+        return {'error': '需要 name，或 date（可加 time_from / time_to）'}
+    text = '\n'.join(f'[{_clock(t)[11:]}] {x}' for t, x in rows)
+    return {'sentences': len(rows), 'text': text[:15000] + ('\n…（太长截断了，请缩小时间范围）' if len(text) > 15000 else '')}
+
+
+def _fn(name, desc, props=None, required=()):
+    return {'type': 'function', 'function': {'name': name, 'description': desc, 'parameters': {
+        'type': 'object', 'properties': props or {}, 'required': list(required)}}}
+
+
+DATE = {'type': 'string', 'description': 'YYYY-MM-DD'}
+TOOLS_WEB = [
+    {'type': 'deepseek_web_search'}, {'type': 'deepseek_read_url'},
+    _fn('web_search', '用户自己的四引擎搜索（Exa、Bing、SearXNG、Grok 同时搜、去重），比自带搜索全，约 10 多秒。返回标题、链接、摘要、来源引擎。',
+        {'query': {'type': 'string'}}, ['query']),
+]
+TOOLS_REC = [
+    _fn('recordings_days', '有录音的日期（最近的在前）、每天录了几段多少分钟、当日 AI 总结的标题。', {'limit': {'type': 'integer'}}),
+    _fn('recordings_day', '某一天的 AI 当日总结（概括、时间线、待办）和当天每段录音的时间、标题、摘要、待办。', {'date': DATE}, ['date']),
+    _fn('recordings_search', '在所有录音的逐句原文里搜关键词（多个词用空格分开，需同时出现），返回时间、录音名、那句话。',
+        {'query': {'type': 'string'}, 'date_from': DATE, 'date_to': DATE}, ['query']),
+    _fn('recordings_transcript', '读一段录音的逐句原文（name 来自其他工具），或某天某个时间段的全部原文（date + time_from/time_to，HH:MM）。',
+        {'name': {'type': 'string'}, 'date': DATE, 'time_from': {'type': 'string'}, 'time_to': {'type': 'string'}}),
+]
+FUNCS = {'web_search': web_search, 'recordings_days': recordings_days, 'recordings_day': recordings_day,
+         'recordings_search': recordings_search, 'recordings_transcript': recordings_transcript}
+
+
+def run_tool(call, allowed):
+    name = call['function']['name']
+    try:
+        args = json.loads(call['function'].get('arguments') or '{}')
+        if name not in allowed or not isinstance(args, dict):
+            raise ValueError(f'没有这个工具：{name}')
+        out = FUNCS[name](**args)
+    except Exception as e:
+        out = {'error': str(e) or type(e).__name__}
+    e5rec.log(f'assistant: tool {name}({call["function"].get("arguments")!s:.80}) -> {len(json.dumps(out, ensure_ascii=False))} chars')
+    return {'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(out, ensure_ascii=False)[:20000]}
+
+
+def answer(question, locked=False, mode=DEFAULT_MODE):
     with _memory_lock:
         now = time.time()
         _memory[:] = [m for m in _memory if now - m[0] < MEMORY_S][-MEMORY_TURNS:]
@@ -96,11 +217,26 @@ def answer(question, locked=False, mode='smart'):
     for _at, q, a in turns:
         msgs += [{'role': 'user', 'content': q}, {'role': 'assistant', 'content': a}]
     msgs.append({'role': 'user', 'content': question})
-    model, think = MODES.get(mode, MODES['smart'])
-    body = {'model': model, 'thinking': {'type': 'enabled' if think else 'disabled'}, 'max_tokens': 2000,
-            'tools': [{'type': 'deepseek_web_search'}, {'type': 'deepseek_read_url'}], 'messages': msgs}
-    out = json.loads(_post(CHAT, body))
-    text = (out['choices'][0]['message'].get('content') or '').strip()
+    model, effort = MODES.get(mode, MODES[DEFAULT_MODE])
+    tools = TOOLS_WEB + ([] if locked else TOOLS_REC)
+    allowed = {t['function']['name'] for t in tools if t['type'] == 'function'}
+    deadline = time.monotonic() + ANSWER_BUDGET_S
+    text = ''
+    for rnd in range(MAX_ROUNDS + 1):
+        last = rnd == MAX_ROUNDS or time.monotonic() > deadline - 30
+        body = {'model': model, 'thinking': {'type': 'enabled' if effort else 'disabled'}, 'max_tokens': 8000,
+                **({'reasoning_effort': effort} if effort else {}), 'messages': msgs,
+                # (the last round: no more tools, an answer from what there is)
+                **({} if last else {'tools': tools})}
+        out = json.loads(_post(CHAT, body, timeout=max(30, min(180, deadline - time.monotonic()))))
+        m = out['choices'][0]['message']
+        calls = [c for c in (m.get('tool_calls') or []) if c.get('type') == 'function']
+        if not calls or last:
+            text = (m.get('content') or '').strip()
+            break
+        msgs.append({k: m[k] for k in ('role', 'content', 'reasoning_content', 'tool_calls') if k in m})
+        with ThreadPoolExecutor(min(4, len(calls))) as pool:
+            msgs.extend(pool.map(lambda c: run_tool(c, allowed), calls))
     if not locked:
         with _memory_lock:
             _memory.append((time.time(), question, text))
@@ -134,7 +270,7 @@ def speak(text, boost_db=0):
             merged[-1] += p
         else:
             merged.append(p)
-    with ThreadPoolExecutor(min(8, max(1, len(merged)))) as pool:
+    with ThreadPoolExecutor(min(16, max(1, len(merged)))) as pool:
         pcm = b''.join(pool.map(_tts, merged or [text]))
     b = io.BytesIO()
     with wave.open(b, 'wb') as w:           # (DeepSeek's pcm: 24 kHz, 16-bit, mono)
@@ -145,7 +281,7 @@ def speak(text, boost_db=0):
     return louder(b.getvalue(), boost_db)
 
 
-def ask(wav, locked=False, boost_db=8, mode='smart'):
+def ask(wav, locked=False, boost_db=8, mode=DEFAULT_MODE):
     t0 = time.monotonic()
     question = e5rec.asr_wav(wav)
     t1 = time.monotonic()

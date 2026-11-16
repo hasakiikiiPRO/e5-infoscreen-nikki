@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "1.3",
+	"version": "1.4",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -43,14 +43,14 @@
 			"id": "mode",
 			"type": "choice",
 			"uci": "e5-plugin-assistant.settings.mode",
-			"default": "smart",
+			"default": "max",
 			"label": {
 				"zh": "思考程度",
 				"en": "Thinking"
 			},
 			"note": {
-				"zh": "聪明：先想再答，约多等 2–3 秒；最聪明（V4 Pro）更慢，效果和聪明差不多",
-				"en": "Smart thinks first (+2-3 s)"
+				"zh": "最强：深度思考、不限长度，一般 10 秒左右才开口；标准约 4 秒；快速不思考",
+				"en": "Max thinks hardest (~10 s)"
 			},
 			"options": [
 				{
@@ -63,15 +63,15 @@
 				{
 					"value": "smart",
 					"label": {
-						"zh": "聪明（推荐）",
-						"en": "Smart"
+						"zh": "标准",
+						"en": "Standard"
 					}
 				},
 				{
-					"value": "best",
+					"value": "max",
 					"label": {
-						"zh": "最聪明（V4 Pro，慢）",
-						"en": "Best (slow)"
+						"zh": "最强（默认）",
+						"en": "Max"
 					}
 				}
 			]

@@ -2,3 +2,5 @@
 *.zip
 .omc/
 __pycache__/
+websearch.json
+server.json

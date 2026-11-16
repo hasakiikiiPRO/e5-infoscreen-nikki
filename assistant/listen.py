@@ -47,7 +47,7 @@ NAS_CERT = '/etc/e5rec/nas.pem'
 RATE = 48000
 MAX_S = 60
 MIN_S = 0.6
-NAS_TIMEOUT = 150                       # (the NAS's own worst case: ASR + answer + speech)
+NAS_TIMEOUT = 240                       # (the NAS's own worst case: ASR + thinking hard with search + speech)
 # a conversation's later turns: no key held, the sound tells
 WAIT_S = 6                              # nothing said this long after the pulse: it is over
 TURN_MAX_S = 30
@@ -226,7 +226,7 @@ def ask(wav):
     try:
         conn.request('POST', '/v1/assistant', body=wav, headers={
             'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0',
-            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'smart')})
+            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'max')})
         r = conn.getresponse()
         body = json.loads(r.read() or b'{}')
     finally:
