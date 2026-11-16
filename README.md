@@ -175,6 +175,28 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 
 **隐私**：录别人说话前请先征得同意。
 
+## 双卡：广电 / 移动卡要锁 5G 频段（`tools/`）
+
+这台 E5 的基带有厂商配置错误：**广电、移动的卡如果 5G 频段同时开着 n28 和 n41（或者干脆不锁），一跑数据基带就崩溃重启**（`Modem Assert`，原因 `Drm allocate spr rf path fail`，原厂 Android 上也会）。表现是：显示 5G 已连接、拿到了 IP，但几秒到几分钟后就没网，信号显示 0%。依据：上游 [issue #15](https://github.com/sprd-linux-devs/e5-linux/issues/15) 与 FINDINGS §47.2。
+
+解决办法是 **n28 / n41 只锁一个**。实测（广电卡在卡 2）：
+
+| 5G 频段锁 | 结果 |
+|---|---|
+| 不锁 | 拿到 IP 后 1 秒崩溃 |
+| n28 + n41 + n79 | 小流量能用，大流量下载时崩溃 |
+| **只锁 n41** | 3 分钟 4 路大流量下载 427 MB（约 18 Mbps），0 次崩溃 |
+
+设置命令（卡 2 的编号是 1；设置保存在 `/etc/unisoc-modem/lock-state.d/sim1/nr`，重启后保留）：
+
+```sh
+MU300_SIM_SLOT=1 /usr/libexec/unisoc-modem/lock-control apply nr 41
+```
+
+写入时会重启一次射频，当前上网卡会短暂断网。只锁 n41 时，没有 n41 信号的地方会退回 4G。电信卡（n78 / n1）不锁也一直正常。
+
+`tools/sim-band-test.sh [频段] [秒数]` 在 E5 上自己完成整套测试，不需要电脑在线盯着：写频段锁并读回核对 → 切到卡 2 → 4 路大流量下载（默认 180 秒）→ 实时盯基带崩溃；**崩溃或没网就自动切回卡 1**，另有 10 分钟看门狗。结果在 `/tmp/gd3.log`、`/tmp/gd3.result`。测试时电脑别经 E5 上网，否则切卡时电脑也会断网。
+
 ## 共同
 
 ### 需要什么
