@@ -1,7 +1,7 @@
 {
 	"id": "recorder",
 	"api_version": 2,
-	"version": "1.1",
+	"version": "1.2",
 	"name": { "zh": "录音", "en": "Recorder" },
 	"description": { "zh": "用机身麦克风录音（分段 MP3），电脑自动同步并转文字", "en": "Records the built-in microphone in MP3 segments for the computer to transcribe" },
 	"entry": "index.html",

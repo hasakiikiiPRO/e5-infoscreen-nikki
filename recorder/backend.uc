@@ -12,6 +12,11 @@ const INIT = '/etc/init.d/e5-recorder';
 const INDEX = '/usr/share/e5-infoscreen/www/index.html';
 const INDEX_ANCHOR = '<script src="app.js"></script>\n';
 const HTML_BEGIN = '<!-- BEGIN e5-recorder', HTML_END = '<!-- END e5-recorder -->\n';
+// The side key (the image's own sidekey app, built in and locked): a third
+// choice for holding it, "开关录音".  Its files are the image's, so an image
+// update brings them back without it -- the minute check puts it in again,
+// each edit only where its anchor is (another sidekey version: left alone).
+const SK = '/usr/share/e5-infoscreen/www/plugins/sidekey';
 
 return function(ctx) {
 	function fail(msg, code) {
@@ -61,11 +66,43 @@ return function(ctx) {
 		ctx.log('index.html patched (the lock screen\'s recording mark), the screen restarts');
 		ctx.run("setsid sh -c 'sleep 2; /etc/init.d/e5-infoscreen restart' >/dev/null 2>&1 &");
 	}
+	function edit(path, from, to, done) {
+		let src = readfile(path);
+		if (src == null || index(src, done) >= 0) return false;
+		if (length(split(src, from)) != 2) return false;
+		let tmp = path + '.recorder-new';
+		if (writefile(tmp, replace(src, from, to)) == null || !rename(tmp, path)) { unlink(tmp); return false; }
+		return true;
+	}
+	function ensure_sidekey() {
+		let fn = readfile(`${APP}/sidekey-record.js`);
+		if (fn == null || !stat(`${SK}/patch.js`)) return;
+		let n = 0;
+		n += edit(`${SK}/backend.uc`, "const MODES = [ 'toggle', 'page' ];",
+			"const MODES = [ 'toggle', 'page', 'record' ];", "'record' ]");
+		n += edit(`${SK}/backend.uc`, "return { mode, toggle: mode == 'toggle', hold,",
+			"return { mode, toggle: mode == 'toggle' || mode == 'record', hold,", "mode == 'record', hold,");
+		n += edit(`${SK}/patch.js`, "function sidekeyToggle(m) {\n",
+			fn + "function sidekeyToggle(m) {\n", 'function sidekeyRecord(m)');
+		n += edit(`${SK}/patch.js`, "\tif (!last || !last.wifi) return;              // no status yet\n",
+			"\tif (m.mode == 'record') { sidekeyRecord(m); return; }\n\tif (!last || !last.wifi) return;              // no status yet\n",
+			"m.mode == 'record'");
+		let man = null;
+		try { man = json(readfile(`${SK}/manifest.json`)); } catch (e) {}
+		let modes = man?.settings?.[0];
+		if (modes?.id == 'mode' && !length(filter(modes.options ?? [], o => o.value == 'record'))) {
+			push(modes.options, { value: 'record', label: { zh: '开关录音（「录音」应用）', en: 'Recording on / off' } });
+			let tmp = `${SK}/manifest.json.recorder-new`;
+			if (writefile(tmp, sprintf('%.J\n', man)) != null && rename(tmp, `${SK}/manifest.json`)) n++;
+		}
+		if (n) ctx.log(`side key: recording choice put in (${n} edits); sidekey re-patches the screen`);
+	}
 	function checks() {
 		if (!ctx.state_get('checked', 60)) {
 			ctx.state_put('checked', { at: time() });
 			ensure_service();
 			ensure_lock_mark();
+			ensure_sidekey();
 		}
 	}
 	function stamp(sec) {

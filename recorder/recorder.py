@@ -214,6 +214,9 @@ def unpatch_index():
 
 def removed(seg):
     unpatch_index()
+    # (the side key's "record" choice would only fail now: back to the hotspot)
+    subprocess.run("[ \"$(uci -q get e5-plugin-sidekey.settings.mode)\" = record ] && "
+                   "uci set e5-plugin-sidekey.settings.mode=toggle && uci commit e5-plugin-sidekey", shell=True)
     if seg:
         seg.close('app removed')
     wake(False)
