@@ -40,7 +40,8 @@ import wave
 
 RUN = '/tmp/run/e5-assistant'
 STATE, STOP, CANCEL, PIDF = RUN + '/state.json', RUN + '/stop', RUN + '/cancel', RUN + '/pid'
-ANSWER = RUN + '/answer.wav'
+SKIP = RUN + '/skip'                      # (read enough: stop speaking, listen for the next turn)
+ANSWER = RUN + '/answer'                 # (+ .mp3 or .wav)
 WANT = '/tmp/run/e5-assistant.want'
 HISTORY = '/mnt/e5-data/e5assist/history.json'
 NAS_CERT = '/etc/e5rec/nas.pem'
@@ -228,7 +229,9 @@ def ask(wav, step=lambda steps: None):
     try:
         conn.request('POST', '/v1/assistant', body=wav, headers={
             'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0',
-            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'max'), 'X-Stream': '1'})
+            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'max'), 'X-Stream': '1',
+            # (MP3, an eighth of the size, only when PulseAudio plays it: aplay knows WAV only)
+            'X-Audio': 'mp3' if pulse() else 'wav'})
         r = conn.getresponse()
         if r.status != 200:
             try:
@@ -274,31 +277,44 @@ def remember(q, a):
         pass
 
 
+def pulse():
+    return subprocess.run(['pidof', 'pulseaudio'], capture_output=True).returncode == 0
+
+
 def ours_playing():
-    # (only the aplay playing this file: not a ringtone or another app's sound)
-    return subprocess.run(['pgrep', '-f', ANSWER], capture_output=True).returncode == 0
+    # (only the player of this file -- paplay or aplay -- not a ringtone or another app's sound)
+    return subprocess.run(['pgrep', '-f', ANSWER + '[.]'], capture_output=True).returncode == 0
 
 
-def speak(audio):
-    with open(ANSWER, 'wb') as f:
+def speak(audio, fmt='wav', secs=None):
+    path = f'{ANSWER}.{"mp3" if fmt == "mp3" else "wav"}'
+    for old in (ANSWER + '.mp3', ANSWER + '.wav'):
+        if old != path:
+            try:
+                os.unlink(old)
+            except FileNotFoundError:
+                pass
+    with open(path, 'wb') as f:
         f.write(audio)
-    # (the length from the size: a streamed WAV's header may not say how long it is)
-    try:
-        with wave.open(ANSWER) as w:
-            per_s = w.getframerate() * w.getsampwidth() * w.getnchannels()
-        secs = max(0, len(audio) - 44) / per_s
-    except (wave.Error, EOFError, ZeroDivisionError):
-        secs = 30
-    subprocess.run(['/usr/libexec/e5-volume', 'play', ANSWER])
+    if not secs and fmt != 'mp3':
+        # (the length from the size: a streamed WAV's header may not say how long it is)
+        try:
+            with wave.open(path) as w:
+                per_s = w.getframerate() * w.getsampwidth() * w.getnchannels()
+            secs = max(0, len(audio) - 44) / per_s
+        except (wave.Error, EOFError, ZeroDivisionError):
+            secs = None
+    secs = secs or 600
+    subprocess.run(['/usr/libexec/e5-volume', 'play', path])
     limit = time.monotonic() + secs + 3
     time.sleep(0.3)
-    while time.monotonic() < limit and not said(CANCEL):
+    while time.monotonic() < limit and not said(CANCEL) and not said(SKIP):
         if not ours_playing():
             return
         time.sleep(0.2)
     # (no pkill on this image)
     # (the pattern does not match its own command line: the shell running it is not killed)
-    subprocess.run("kill $(pgrep -f 'e5-assistant/answer[.]wav') 2>/dev/null", shell=True)
+    subprocess.run("kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null", shell=True)
 
 
 TURN = [0]
@@ -346,9 +362,15 @@ def main():
             state('speaking', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])
             audio = base64.b64decode(r.get('audio') or '')
             if audio:
-                speak(audio)
+                speak(audio, r.get('format') or 'wav', r.get('seconds'))
             if said(CANCEL):
                 return state('done', cancelled=True, question=q, answer=a)
+            skipped = said(SKIP)
+            if skipped:
+                try:
+                    os.unlink(SKIP)
+                except FileNotFoundError:
+                    pass
             # (nothing heard, or a one-question setting: that is the end of it)
             if not continuous or not q or TURN[0] + 1 >= MAX_TURNS:
                 return state('done', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])

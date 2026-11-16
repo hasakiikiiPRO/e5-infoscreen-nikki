@@ -7,6 +7,7 @@
 //   POST /start     {locked}: a new run (the last one ended first) -> {run}
 //   POST /stop      the key let go: stop listening (the current run)
 //   POST /cancel    drop the current run (and its voice)
+//   POST /skip      enough of the answer read: stop the voice (and, in a conversation, listen again)
 //   GET  /history   the last questions and answers
 //   GET  /notifications  (the minute check: early.html put in, if not)
 import { readfile, writefile, rename, stat, unlink, mkdir } from 'fs';
@@ -78,7 +79,8 @@ return function(ctx) {
 			let fresh = time() - (s.at ?? 0) < STARTING_S;
 			if (!busy && !fresh && s.phase != 'done' && s.phase != 'error' && s.phase != 'idle')
 				s = { ...s, phase: 'error', error: '助手进程意外退出了' };
-			return { ok: true, ...s, busy, current: current(), hold_ms: hold_ms(), enabled: enabled() };
+			return { ok: true, ...s, busy, current: current(), hold_ms: hold_ms(), enabled: enabled(),
+				continuous: ctx.uci().get('e5-plugin-assistant', 'settings', 'continuous') != '0' };
 		},
 		'POST /start': function(req) {
 			checks();
@@ -86,7 +88,7 @@ return function(ctx) {
 			let pid = running();
 			if (pid) {
 				mark('cancel');
-				ctx.run(`kill ${pid} 2>/dev/null; kill $(pgrep -f 'e5-assistant/answer[.]wav') 2>/dev/null`);
+				ctx.run(`kill ${pid} 2>/dev/null; kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null`);
 			}
 			let c = clock() ?? [ time(), 0 ];
 			let run = sprintf('%d-%09d', c[0], c[1]);
@@ -103,9 +105,14 @@ return function(ctx) {
 			mark('stop');
 			return { ok: true };
 		},
+		'POST /skip': function(req) {
+			mark('skip');
+			ctx.run(`kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null`);
+			return { ok: true };
+		},
 		'POST /cancel': function(req) {
 			mark('cancel');
-			ctx.run(`kill $(pgrep -f 'e5-assistant/answer[.]wav') 2>/dev/null`);
+			ctx.run(`kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null`);
 			return { ok: true };
 		},
 		'GET /history': function(req) {

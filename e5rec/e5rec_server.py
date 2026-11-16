@@ -439,8 +439,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass                            # (the E5 gave up: the answer still goes to history)
         try:
             r = e5assist.ask(wav, locked=locked, boost_db=boost, mode=mode, progress=progress)
+            audio, fmt = r['wav'], 'wav'
+            # (X-Audio: mp3 -- an eighth of the size, for a long answer over mobile data)
+            if self.headers.get('X-Audio') == 'mp3' and audio:
+                mp3 = e5assist.to_mp3(audio)
+                if mp3:
+                    audio, fmt = mp3, 'mp3'
             line({'ok': True, 'question': r['question'], 'answer': r['answer'], 'timing': r['timing'],
-                  'audio': base64.b64encode(r['wav']).decode()})
+                  'format': fmt, 'seconds': e5assist.wav_seconds(r['wav']), 'audio': base64.b64encode(audio).decode()})
         except OSError:
             pass
         except Exception as e:

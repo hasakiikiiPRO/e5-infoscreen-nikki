@@ -15,6 +15,7 @@
 	let cfg = null, cfgAt = -Infinity, gone = false;
 	let held = null, pass = false, card = null, poll = null, hideAt = 0;
 	let run = null, gen = 0, buzzed = false, safety = null;
+	let phase = null;                           // (the card's: while speaking a tap means "skip")
 	const isOk = (e) => e.key == 'Enter' || e.keyCode == 13;
 	const dark = () => typeof blank !== 'undefined' && blank;
 	const locked = () => document.body.classList.contains('screen-locked');
@@ -40,7 +41,7 @@
 			const css = document.createElement('style');
 			css.textContent = '#e5-assist{position:fixed;left:8px;right:8px;bottom:10px;z-index:2147483646;background:rgba(18,24,34,.97);' +
 				'color:#e8ecf2;border-radius:14px;padding:12px 14px;font:14px/1.55 "Noto Sans CJK SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);' +
-				'max-height:70vh;overflow:hidden;box-sizing:border-box}#e5-assist .q{color:#8fb6ff;margin-bottom:6px}#e5-assist .st{color:#8997a8;font-size:12px;margin-top:6px}' +
+				'max-height:78vh;overflow-y:auto;scrollbar-width:none;box-sizing:border-box}#e5-assist .q{color:#8fb6ff;margin-bottom:6px}#e5-assist .st{color:#8997a8;font-size:12px;margin-top:6px}' +
 				'#e5-assist .mic{display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff5a5a;margin-right:6px;animation:e5a 1s infinite}' +
 				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}#e5-assist .now{color:#e8ecf2;font-size:13px}#e5-assist .st{margin-top:2px}';
 			document.head.appendChild(css);
@@ -48,7 +49,11 @@
 			card.id = 'e5-assist';
 			document.body.appendChild(card);
 		}
-		card.innerHTML = html;
+		if (card.innerHTML != html) {
+			const top = card.scrollTop;
+			card.innerHTML = html;
+			card.scrollTop = top;
+		}
 		card.hidden = false;
 	}
 	function hide() {
@@ -74,12 +79,12 @@
 					: '<div class="now">⏳ 想一下……</div>'));
 		}
 		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '');
-		if (s.phase == 'speaking') return show(qa + '<div class="st">正在说 · 按中间键停止</div>');
-		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">按中间键关闭</div>`);
+		if (s.phase == 'speaking') return show(qa + `<div class="st">正在说 · ↑↓ 翻看 · 按中间键${cfg?.continuous === false ? '停止' : '跳过，直接说下一句'}</div>`);
+		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">↑↓ 翻看 · 按中间键关闭</div>`);
 		if (s.phase == 'done') {
 			if (s.cancelled) return hide();
 			show((qa || `<div class="err">${esc(s.error || '没听到问题')}</div>`)
-				+ `<div class="st">${s.ended ? '对话结束 · ' : ''}按中间键关闭</div>`);
+				+ `<div class="st">${s.ended ? '对话结束 · ' : ''}↑↓ 翻看 · 按中间键关闭</div>`);
 		}
 	}
 	function follow() {
@@ -89,6 +94,8 @@
 			if (g != gen) return;
 			if (s.run != run) { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
 			if (s.phase == 'listening' && !buzzed) { buzzed = true; buzz(60); }
+			if (s.phase != phase && card) card.scrollTop = 0;     // (a new step of the conversation: from its top)
+			phase = s.phase;
 			render(s);
 			const done = s.phase == 'done' || s.phase == 'error';
 			if (!done) { hideAt = 0; poll = setTimeout(follow, 350); return; }
@@ -101,7 +108,7 @@
 	function begin() {
 		hide();
 		const g = gen;
-		run = null; buzzed = false; hideAt = 0;
+		run = null; buzzed = false; hideAt = 0; phase = null;
 		show('<div>准备中……（震一下就可以说了）</div>');
 		post('/start', { locked: locked() }).then((r) => r.json().then((d) => ({ ok: r.ok, d })))
 			.then(({ ok, d }) => {
@@ -125,8 +132,18 @@
 				p.target.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
 		} finally { pass = false; }
 	}
+	function scrollKey(e) {
+		// up/down move the card's text while it is up (and no key is held)
+		if (pass || gone || !open() || held || e.type != 'keydown') return;
+		const k = e.key == 'ArrowUp' ? -1 : e.key == 'ArrowDown' ? 1 : 0;
+		if (!k) return;
+		e.preventDefault(); e.stopImmediatePropagation();
+		card.scrollBy({ top: k * Math.max(60, card.clientHeight * 0.6) });
+		if (hideAt) hideAt = performance.now() + 15000;     // (reading: it stays)
+	}
 	function key(e) {
-		if (pass || gone || !isOk(e)) return;
+		if (pass || gone) return;
+		if (!isOk(e)) return scrollKey(e);
 		config();
 		if (e.type == 'keydown') {
 			if (held && e.repeat) {                 // held down: its repeats are ours
@@ -155,7 +172,9 @@
 		held = null;
 		clearTimeout(p.timer);
 		if (p.fired) return finish();
-		// a tap with the card up: it closes the card (and stops the voice), not the key's usual
+		// a tap with the card up: while it speaks, "read enough" -- the voice stops and (in a conversation)
+		// it listens again; otherwise it closes the card (and stops everything), not the key's usual
+		if (p.wasOpen && phase == 'speaking') { post('/skip').catch(() => {}); return; }
 		if (p.wasOpen) { post('/cancel').catch(() => {}); hide(); return; }
 		tapBack(p);
 	}

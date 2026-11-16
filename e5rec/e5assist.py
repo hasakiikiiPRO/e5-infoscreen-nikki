@@ -36,6 +36,10 @@ MEMORY_TURNS = 6
 MAX_ROUNDS = 8                          # tool rounds in one answer
 ANSWER_BUDGET_S = 170                   # (the E5 waits 240 s for everything)
 WEBSEARCH = Path(__file__).resolve().parent / 'websearch.json'
+# the Obsidian vault's WebDAV (remotely-save's target, plain files): a saved note lands in
+# NOTE_DIR and reaches the computer and the phone on their next sync
+OBSIDIAN = Path(__file__).resolve().parent / 'obsidian-webdav.json'
+NOTE_DIR = 'E5助手'
 # how hard it thinks (the E5's 思考程度): (model, thinking effort or None) -- measured on a planning
 # question: none 1.5 s, shallow; high 4 s, well reasoned; max 11.6 s, planned to the hour
 # (v4-pro: 12 s and no better than flash at high, so not offered)
@@ -52,6 +56,8 @@ SYSTEM = ('你是用户随身带的口袋语音助手（装在一台叫 E5 的�
           '这台设备一直在录用户身边的对话：问到用户自己说过什么、答应过什么、某天做了什么，就用 recordings_ 开头的工具一层层查'
           '（先看有哪些日子或当天总结，再搜关键词，最后读原文），引用时说清是什么时候说的；录音里没有的不要编。'
           '搜索时只搜公开信息，绝不把录音里的内容、人名或私事写进搜索词。'
+          '用户说「存下来、记到笔记、存到 Obsidian」之类，就用 save_note 把他要的内容整理成一篇完整的笔记存进去'
+          '（是刚才的回答就整理刚才的回答，包括关键数据和来源），存好后简短告诉他存了什么。'
           '听不清或问题不完整就请用户再说一遍。')
 LOCKED_NOTE = ('（这次是在锁屏上问的：没有附带用户的录音。问到用户自己说过什么、答应过什么时，'
                '请他解锁后再问，不要猜。）')
@@ -108,6 +114,39 @@ def web_search(query):
         res = json.load(r).get('results') or []
     return [{'title': x.get('title'), 'url': x.get('url'), 'snippet': (x.get('snippet') or '')[:400], 'engine': x.get('source')}
             for x in res[:10]]
+
+
+def save_note(title, content):
+    """A Markdown note into the vault, never over an existing one."""
+    import base64 as b64
+    import urllib.error
+    import urllib.parse
+    c = json.loads(OBSIDIAN.read_text())
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    head = {'Authorization': 'Basic ' + c['auth']}
+    folder = f"{c['base']}/{NOTE_DIR}"
+    try:
+        opener.open(urllib.request.Request(c['url'] + urllib.parse.quote(folder) + '/', method='MKCOL', headers=head), timeout=20)
+    except urllib.error.HTTPError as e:
+        if e.code not in (405, 301):           # (405: it is there already)
+            raise
+    safe = re.sub(r'[\\/:*?"<>|#^\[\]\n\r\t]', ' ', str(title)).strip()[:60] or '笔记'
+    day = time.strftime('%Y-%m-%d')
+    body = (f'---\ntags: [E5助手]\ncreated: {time.strftime("%Y-%m-%d %H:%M")}\nsource: E5 口袋助手\n---\n\n'
+            # (the model usually starts with its own heading: then not a second one)
+            + ('' if content.lstrip().startswith('#') else f'# {title}\n\n') + f'{content.strip()}\n').encode()
+    for n in range(1, 50):
+        name = f'{day} {safe}' + (f' {n}' if n > 1 else '') + '.md'
+        req = urllib.request.Request(c['url'] + urllib.parse.quote(f'{folder}/{name}'), data=body, method='PUT',
+                                     headers={**head, 'If-None-Match': '*', 'Content-Type': 'text/markdown; charset=utf-8'})
+        try:
+            with opener.open(req, timeout=30):
+                pass
+            return {'saved': f'{NOTE_DIR}/{name}', 'note': '电脑和手机上的 Obsidian 下次同步（最多 30 分钟）就能看到'}
+        except urllib.error.HTTPError as e:
+            if e.code != 412:                   # (412: that name is taken: the next one)
+                raise
+    raise RuntimeError('同名笔记太多了')
 
 
 def _clock(t):
@@ -182,6 +221,11 @@ TOOLS_WEB = [
     _fn('web_search', '用户自己的四引擎搜索（Exa、Bing、SearXNG、Grok 同时搜、去重），比自带搜索全，约 10 多秒。返回标题、链接、摘要、来源引擎。',
         {'query': {'type': 'string'}}, ['query']),
 ]
+TOOLS_NOTE = [
+    _fn('save_note', '把内容存成 Obsidian 笔记（Markdown，存在 E5助手 文件夹，不会覆盖已有笔记）。用户要求存、记下来时用。',
+        {'title': {'type': 'string', 'description': '笔记标题，简短'}, 'content': {'type': 'string', 'description': '完整的笔记正文（Markdown）'}},
+        ['title', 'content']),
+]
 TOOLS_REC = [
     _fn('recordings_days', '有录音的日期（最近的在前）、每天录了几段多少分钟、当日 AI 总结的标题。', {'limit': {'type': 'integer'}}),
     _fn('recordings_day', '某一天的 AI 当日总结（概括、时间线、待办）和当天每段录音的时间、标题、摘要、待办。', {'date': DATE}, ['date']),
@@ -190,7 +234,7 @@ TOOLS_REC = [
     _fn('recordings_transcript', '读一段录音的逐句原文（name 来自其他工具），或某天某个时间段的全部原文（date + time_from/time_to，HH:MM）。',
         {'name': {'type': 'string'}, 'date': DATE, 'time_from': {'type': 'string'}, 'time_to': {'type': 'string'}}),
 ]
-FUNCS = {'web_search': web_search, 'recordings_days': recordings_days, 'recordings_day': recordings_day,
+FUNCS = {'save_note': save_note, 'web_search': web_search, 'recordings_days': recordings_days, 'recordings_day': recordings_day,
          'recordings_search': recordings_search, 'recordings_transcript': recordings_transcript}
 
 
@@ -202,6 +246,7 @@ def describe(call):
         a = {}
     n = call['function']['name']
     return {'web_search': lambda: f"四引擎搜索：{a.get('query', '')}",
+            'save_note': lambda: f"存到 Obsidian：{a.get('title', '')}",
             'recordings_days': lambda: '看有哪些天的录音',
             'recordings_day': lambda: f"看 {a.get('date', '')} 的录音总结",
             'recordings_search': lambda: f"在录音里找：{a.get('query', '')}",
@@ -234,7 +279,7 @@ def answer(question, locked=False, mode=DEFAULT_MODE, progress=lambda text: None
         msgs += [{'role': 'user', 'content': q}, {'role': 'assistant', 'content': a}]
     msgs.append({'role': 'user', 'content': question})
     model, effort = MODES.get(mode, MODES[DEFAULT_MODE])
-    tools = TOOLS_WEB + ([] if locked else TOOLS_REC)
+    tools = TOOLS_WEB + TOOLS_NOTE + ([] if locked else TOOLS_REC)
     allowed = {t['function']['name'] for t in tools if t['type'] == 'function'}
     deadline = time.monotonic() + ANSWER_BUDGET_S
     text = ''
@@ -275,6 +320,21 @@ def louder(wav, boost_db):
 
 def _tts(text):
     return _post(TTS, {'text': text, 'voice_id': VOICE, 'format': 'pcm'}, timeout=60)
+
+
+def to_mp3(wav):
+    """48 kbps mono MP3: an eighth of the WAV (a long answer over mobile data); the E5 plays it with paplay."""
+    r = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', 'pipe:0', '-c:a', 'libmp3lame', '-b:a', '48k',
+                        '-ac', '1', '-f', 'mp3', 'pipe:1'], input=wav, capture_output=True, timeout=120)
+    return r.stdout if r.returncode == 0 and r.stdout else None
+
+
+def wav_seconds(wav):
+    try:
+        with wave.open(io.BytesIO(wav)) as w:
+            return (len(wav) - 44) / (w.getframerate() * w.getsampwidth() * w.getnchannels())
+    except (wave.Error, EOFError, ZeroDivisionError):
+        return None
 
 
 def speak(text, boost_db=0):
