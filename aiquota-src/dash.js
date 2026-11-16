@@ -1,0 +1,129 @@
+	// quota-tray's dashboard (hasakiikiiPRO/quota-tray, dashboard_view.py), for a 320x480 screen with keys:
+	// the same data (its payload, made on the NAS by quota-export.py) and the same look -- stats,
+	// one tab per kind, "周额度先用", the account cards -- with left/right for the tabs, up/down
+	// for the cards and OK for a card's details.
+	const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+	function formatReset(ms) {
+		if (!ms) return '';
+		const diff = ms - Date.now();
+		if (diff <= 0) return '已重置';
+		const d = Math.floor(diff / 86400000), h = Math.floor(diff % 86400000 / 3600000), m = Math.floor(diff % 3600000 / 60000);
+		return d > 0 ? `剩 ${d}天${h}h` : h > 0 ? `剩 ${h}h${m}m` : `剩 ${m}m`;
+	}
+	const p2 = (n) => String(n).padStart(2, '0');
+	const at = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+	const STATE = { limited: ['limited', '受限'], warn: ['warn', '预警'], grey: ['grey', '禁用'] };
+	const srcClass = (s) => String(s || 'other').toLowerCase().replace(/\s+/g, '');
+	function winHTML(key, w) {
+		if (!w || typeof w != 'object') return '';
+		const hasP = w.percent != null;
+		const p = hasP ? Math.round(w.percent) : 0;
+		const st = p >= 100 || w.status == 'rate-limited' ? 'limited' : p >= 80 || w.status == 'warn' ? 'warn' : 'ok';
+		const r = formatReset(w.resets_at_ms);
+		return `<div class="dw"><div class="dwh"><span class="dwt">${esc(w.label || key)}${w.tag ? ` <i class="dtag">${esc(w.tag)}</i>` : ''}</span>`
+			+ `<span class="dwv">${r ? `<span class="dwr ${st}">${w.reset_label ? esc(w.reset_label) + ' ' : ''}${r}</span>` : ''}${hasP ? `<b class="${st}">${p}%</b>` : ''}</span></div>`
+			+ (hasP ? `<div class="dpt"><div class="dpb ${st}" style="width:${Math.min(100, Math.max(0, p))}%"></div></div>` : '') + '</div>';
+	}
+	function fableHTML(f) {
+		if (!f || typeof f != 'object') return '';
+		const rows = ['five_hour', 'seven_day'].map((k) => f[k]).filter(Boolean)
+			.map((x) => `<div class="dx"><span>${esc(x.label)}</span><span>${x.requests ?? 0} 次 · ${Math.round((x.tokens ?? 0) / 1000)}k tok · $${(+x.cost || 0).toFixed(2)}</span></div>`);
+		return rows.length ? '<div class="dsec">用量</div>' + rows.join('') : '';
+	}
+	function cardHTML(a, i, sel, open) {
+		const [dot, badge] = STATE[a.state] ?? ['ok', '正常'];
+		const ws = a.windows && typeof a.windows == 'object' ? Object.entries(a.windows) : [];
+		let body = ws.map(([k, w]) => winHTML(k, w)).join('');
+		if (!ws.length) body = a.percent != null ? winHTML('quota', { label: '配额使用率', percent: a.percent })
+			: `<div class="dw"><div class="dwh"><span class="dwt">近期活跃</span><span class="dwv"><b class="ok">${esc(a.status_text || '无流量')}</b></span></div></div>`;
+		const more = i == open ? `<div class="dmore"><div class="dx"><span>账号</span><span>${esc(a.full_label || a.name)}</span></div>`
+			+ (a.site ? `<div class="dx"><span>站点</span><span>${esc(a.site)}${a.stale ? '（本轮拉取失败，沿用上次）' : ''}</span></div>` : '')
+			+ (a.status_text ? `<div class="dx"><span>状态</span><span>${esc(a.status_text)}</span></div>` : '')
+			+ fableHTML(a.fable) + '</div>' : '';
+		return `<div class="dc ${dot == 'limited' ? 'st-limited' : ''}${i == sel ? ' sel' : ''}" data-i="${i}">`
+			+ `<div class="dch"><span class="dai"><span class="ddot ${dot}"></span><span class="dname">${esc(a.name)}</span>`
+			+ `<span class="dsrc ${esc(srcClass(a.source))}">${esc(a.source)}</span>${a.site ? `<span class="dsite">${esc(a.site)}${a.stale ? ' · 旧' : ''}</span>` : ''}</span>`
+			+ `<span class="dbadge ${dot}">${badge}</span></div>`
+			+ `<div class="dlabel">${esc(a.full_label || a.name)}</div>${body}${more}</div>`;
+	}
+	function Dash(root) {
+		let data = null, tab = 'all', sel = 0, open = -1, list = [];
+		const tabs = () => {
+			const groups = {};
+			for (const a of data?.accounts ?? []) if (!a.relay) groups[a.source] = (groups[a.source] ?? 0) + 1;
+			return [['all', '全部', Object.values(groups).reduce((x, y) => x + y, 0)], ...Object.entries(groups).map(([k, n]) => [k, k, n])];
+		};
+		function draw(keepScroll) {
+			if (!data) { root.innerHTML = '<div class="dempty">正在从 NAS 读取配额…</div>'; return; }
+			const all = (data.accounts ?? []).filter((a) => !a.relay);
+			list = tab == 'all' ? all : all.filter((a) => a.source == tab);
+			sel = Math.max(0, Math.min(sel, list.length - 1));
+			const ok = all.filter((a) => a.state == 'ok').length, lim = all.filter((a) => a.state == 'limited').length;
+			const rec = (data.recommend ?? []).filter((r) => r.resets_at_ms > Date.now()).slice(0, 3);
+			const age = data.age != null ? (data.age < 90 ? '刚刚' : `${Math.round(data.age / 60)} 分钟前`) : '';
+			const head = `<div class="dh"><b>AI 配额监控</b><span>${data.error ? '⚠️ ' : ''}${age ? age + '更新' : esc(data.updated_at || '')}</span></div>`
+				+ `<div class="dstats"><span>总账号 <b>${all.length}</b></span><span class="ok">正常 <b>${ok}</b></span>${lim ? `<span class="limited">受限 <b>${lim}</b></span>` : ''}</div>`
+				+ `<div class="dtabs">${tabs().map(([k, name, n]) => `<span class="dtab${k == tab ? ' on' : ''}">${esc(name)} <i>${n}</i></span>`).join('')}</div>`
+				+ (rec.length ? `<div class="drec"><span class="drt">周额度先用</span>${rec.map((r, i) => `<span class="drp${i ? '' : ' first'}"><b>${esc(r.model)}</b> 剩 ${r.left}% · ${formatReset(r.resets_at_ms).replace(/^剩 /, '')}后重置</span>`).join('')}</div>` : '');
+			const scroll = keepScroll ? root.scrollTop : 0;
+			root.innerHTML = head + (list.map((a, i) => cardHTML(a, i, sel, open)).join('') || '<div class="dempty">这一类没有账号</div>')
+				+ '<div class="dhint">←→ 切换类别 · ↑↓ 选择 · 确定 展开详情</div>';
+			root.scrollTop = scroll;
+			root.querySelector('.dtab.on')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+			if (keepScroll) root.querySelector('.dc.sel')?.scrollIntoView({ block: 'nearest' });
+		}
+		return {
+			set(d) { data = d; draw(true); },
+			reset() { tab = 'all'; sel = 0; open = -1; root.scrollTop = 0; draw(false); },
+			onFirstTab: () => tab == 'all',
+			key(kind) {
+				if (!data) return false;
+				const ts = tabs().map((t) => t[0]);
+				if (kind == 'left' || kind == 'right') {
+					const i = ts.indexOf(tab) + (kind == 'right' ? 1 : -1);
+					if (i < 0 || i >= ts.length) return false;
+					tab = ts[i]; sel = 0; open = -1; root.scrollTop = 0; draw(false);
+					return true;
+				}
+				if (kind == 'up' || kind == 'down') {
+					if (!list.length) return true;
+					if (kind == 'up' && sel == 0) { root.scrollTop = 0; return true; }
+					sel = Math.max(0, Math.min(list.length - 1, sel + (kind == 'down' ? 1 : -1)));
+					draw(true);
+					return true;
+				}
+				if (kind == 'ok') { open = open == sel ? -1 : sel; draw(true); return true; }
+				return false;
+			},
+		};
+	}
+	const DCSS = '.dh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px}.dh b{font-size:15px}.dh span{font-size:11px;color:#64748b}' +
+		'.dstats{display:flex;gap:6px;margin-bottom:6px}.dstats span{font-size:11px;color:#94a3b8;background:#12151d;border:1px solid #1c2230;border-radius:999px;padding:2px 8px}' +
+		'.dstats b{color:#f3f6fa;font-weight:600}.dstats .ok b{color:#10b981}.dstats .limited b{color:#f43f5e}' +
+		'.dtabs{display:flex;gap:5px;overflow-x:auto;scrollbar-width:none;margin-bottom:6px;white-space:nowrap}.dtab{font-size:12px;color:#94a3b8;border:1px solid #1c2230;background:#12151d;border-radius:8px;padding:3px 8px;flex-shrink:0}' +
+		'.dtab i{font-style:normal;font-size:10px;color:#64748b;margin-left:2px}.dtab.on{color:#f3f6fa;border-color:#60a5fa;background:rgba(96,165,250,.14)}.dtab.on i{color:#93c5fd}' +
+		'.drec{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;align-items:center}.drt{font-size:11px;color:#64748b}' +
+		'.drp{font-size:10.5px;color:#94a3b8;border:1px solid #1c2230;border-radius:6px;padding:1px 6px}.drp.first{border-color:#10b981}.drp b{color:#10b981}' +
+		'.dc{background:#12151d;border:1px solid #1c2230;border-radius:12px;padding:9px 10px;margin-bottom:7px}.dc.st-limited{border-color:rgba(244,63,94,.35)}' +
+		'.dc.sel{border-color:#dce8ff;box-shadow:0 0 0 1px #dce8ff}' +
+		'.dch{display:flex;justify-content:space-between;align-items:center;gap:6px}.dai{display:flex;align-items:center;gap:5px;min-width:0}' +
+		'.ddot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:#10b981;box-shadow:0 0 6px #10b981}.ddot.limited{background:#f43f5e;box-shadow:0 0 6px #f43f5e}' +
+		'.ddot.warn{background:#f59e0b;box-shadow:0 0 6px #f59e0b}.ddot.grey{background:#64748b;box-shadow:none}' +
+		'.dname{font-size:13px;font-weight:600;color:#f3f6fa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+		'.dsrc{font-size:9px;font-weight:700;text-transform:uppercase;padding:0 4px;border-radius:4px;flex-shrink:0;color:#94a3b8;background:rgba(148,163,184,.12)}' +
+		'.dsrc.codex{color:#34d399;background:rgba(52,211,153,.12)}.dsrc.grok,.dsrc.xai{color:#38bdf8;background:rgba(56,189,248,.12)}' +
+		'.dsrc.antigravity{color:#60a5fa;background:rgba(96,165,250,.12)}.dsrc.workbuddy{color:#f59e0b;background:rgba(245,158,11,.12)}' +
+		'.dsrc.claude{color:#e8a87c;background:rgba(232,168,124,.12)}.dsrc.deepseek{color:#818cf8;background:rgba(129,140,248,.12)}' +
+		'.dsite{font-size:9.5px;color:#64748b;border:1px solid #1c2230;border-radius:4px;padding:0 3px;flex-shrink:0}' +
+		'.dbadge{font-size:10.5px;font-weight:600;padding:1px 6px;border-radius:999px;flex-shrink:0;color:#10b981;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.28)}' +
+		'.dbadge.limited{color:#f43f5e;background:rgba(244,63,94,.12);border-color:rgba(244,63,94,.28)}.dbadge.warn{color:#f59e0b;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.28)}' +
+		'.dbadge.grey{color:#64748b;background:rgba(255,255,255,.05);border-color:#1c2230}' +
+		'.dlabel{font:11px ui-monospace,monospace;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:2px 0 4px}' +
+		'.dw{margin-top:5px}.dwh{display:flex;justify-content:space-between;align-items:baseline;gap:6px}.dwt{font-size:12px;color:#94a3b8}' +
+		'.dtag{font-style:normal;font-size:9.5px;color:#93c5fd;border:1px solid rgba(96,165,250,.3);border-radius:4px;padding:0 3px}' +
+		'.dwv{display:flex;gap:6px;align-items:baseline;flex-shrink:0}.dwr{font-size:10.5px;color:#64748b}.dwr.limited{color:#f43f5e}.dwr.warn{color:#f59e0b}' +
+		'.dwv b{font-size:13px}.dwv b.ok{color:#10b981}.dwv b.warn{color:#f59e0b}.dwv b.limited{color:#f43f5e}' +
+		'.dpt{height:5px;background:#1a202c;border-radius:3px;overflow:hidden;margin-top:3px}.dpb{height:100%;border-radius:3px;background:#10b981}.dpb.warn{background:#f59e0b}.dpb.limited{background:#f43f5e}' +
+		'.dmore{margin-top:7px;border-top:1px solid #1c2230;padding-top:5px}.dx{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#94a3b8;margin-top:2px}' +
+		'.dx span:last-child{color:#cbd5e1;text-align:right;word-break:break-all}.dsec{font-size:11px;color:#64748b;margin-top:5px}' +
+		'.dempty{color:#64748b;text-align:center;padding:30px 0;font-size:12px}.dhint{color:#64748b;font-size:10.5px;text-align:center;padding:4px 0 2px}';

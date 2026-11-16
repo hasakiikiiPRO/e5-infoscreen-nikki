@@ -210,11 +210,12 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 - 联网：DeepSeek 自带的 `deepseek_web_search`（搜索）和 `deepseek_read_url`（读网页），模型自己决定什么时候用。
 - 设置：开关、长按时长、连续对话、回答音量。应用页显示最近的问答。
 
-## 「配额」：AI 账号配额，锁屏按 → 就能看（`aiquota/`）
+## 「配额」：quota-tray 看板，锁屏按 → 就能看（`aiquota/`）
 
-- 数据来自 NAS 的配额面板（`opencode-quota-webui` 的 `/api/quota`），E5 后台每分钟最多拉一次，页面立刻显示上次的（拉取要几秒）。只有真正的 JSON 才替换上次的缓存。
-- 详细显示：顶部总览（几个号、正常/用尽/异常、DeepSeek 余额）；按类型分组（Codex / Claude / Grok / Antigravity / DeepSeek / WorkBuddy），每组标数量；每个号一张卡：套餐、状态、账号、数据来源（实时 / CPA 快照 / CPA 插件）和更新时间；每个窗口单独一行：百分比、进度条、**精确的重置/到期时间和倒计时**，已过重置时间的标「数据旧了」，探测失败写原因。
-- **锁屏上按 → 显示，← 回时钟，↑↓ 滚动**；每次亮屏都从时钟开始。电源键不变。解锁后也可以打开「配额」应用看。
+- **数据就是 [quota-tray](https://github.com/hasakiikiiPRO/quota-tray) 看板的数据**：NAS 上跑 quota-tray 的 `quota-export.py`（拉取逻辑原样导入，只是不开界面），每 2 分钟写一份（`e5rec/nas/quota-export.service`，境外站点走 NAS 本机代理），e5rec-server 的 `GET /v1/quota` 带口令提供；E5 用「录音」应用里的 NAS 地址、口令和钉死的证书去取，后台每分钟最多一次，只有带账号的数据才替换缓存。Claude、Antigravity、Codex、xAI、WorkBuddy、大牛钱包、DeepSeek 都在。
+- **界面照着看板做**：顶部「总账号 / 正常 / 受限」，**每类一个标签页**（全部 / Antigravity / Claude / Codex …），「周额度先用」推荐，账号卡片（状态点、名字、来源和站点标签、状态徽章；每个窗口的重置倒计时、百分比、进度条）。
+- **按键**：锁屏按 → 打开；**←→ 切换类别，↑↓ 选账号，确定 展开详情**（完整账号、站点、状态、近 5 小时/近 7 天用量），再按确定收起；在「全部」上按 ← 或按返回回到时钟。每次亮屏从时钟开始，电源键不变。解锁后也可以打开「配额」应用，按键一样。
+- 两个页面由 `aiquota-src/dash.js` 一份组件生成（`python3 aiquota-src/build.py`），改界面只改这一处。
 
 ## 双卡：广电 / 移动卡要锁 5G 频段（`tools/`）
 

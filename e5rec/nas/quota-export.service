@@ -1,0 +1,15 @@
+[Unit]
+Description=quota-tray data without the tray, for the E5 lock screen (via e5rec-server /v1/quota)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/quota-tray-export
+Environment=HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890
+Environment=NO_PROXY=127.0.0.1,localhost,192.168.0.0/16,10.0.0.0/8,100.64.0.0/10,47.105.105.85
+ExecStart=/usr/bin/python3 -u %h/quota-tray-export/quota-export.py /vol2/1000/e5rec/quota.json --interval 120
+Restart=always
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=default.target

@@ -20,6 +20,8 @@ Reading (the token -- the E5's screen app -- or the web page's session cookie):
   GET /v1/day/<YYYY-MM-DD>             a day's AI summary and its recordings
   GET /v1/search?q=                    sentences containing all the words
   GET /v1/audio/<name>                 the MP3 (the web page's player; Range works)
+  GET /v1/quota                        the AI accounts' quotas: quota-tray's own payload, written by
+                                       quota-export.py (quota_file in server.json), and how old it is
   GET /                                the web page (web.html); POST /v1/login {"password"} sets the cookie
 
 The pocket assistant (the E5's held OK key):
@@ -285,6 +287,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, api_days(q))
             if u.path == '/v1/search':
                 return self.reply(200, api_search(q))
+            if u.path == '/v1/quota':
+                return self.send_quota()
             m = re.fullmatch(r'/v1/(rec|day|audio)/([^/]+)', u.path)
             if m and m.group(1) == 'day' and re.fullmatch(r'\d{4}-\d{2}-\d{2}', m.group(2)):
                 return self.reply(200, api_day(m.group(2)))
@@ -296,6 +300,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except ValueError:
             return self.reply(400, {'ok': False, 'error': 'bad request'})
         self.reply(404, {'ok': False, 'error': 'not found'})
+
+    def send_quota(self):
+        p = Path(CFG.get('quota_file') or HERE / 'quota.json')
+        try:
+            age = time.time() - p.stat().st_mtime
+            body = p.read_bytes()
+            json.loads(body)
+        except (OSError, ValueError):
+            return self.reply(503, {'ok': False, 'error': '配额数据还没生成（quota-export 在 NAS 上跑了吗？）'})
+        # (the payload as it is, with its age in a header: no re-encoding of 46 accounts)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Age', str(int(age)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_audio(self, p):
         try:

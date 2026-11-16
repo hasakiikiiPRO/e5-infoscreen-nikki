@@ -1,29 +1,48 @@
 'use strict';
-// 配额 (aiquota): the AI accounts' quotas from the NAS panel (opencode-quota-webui,
-// GET /api/quota: probing takes seconds, so the last answer is served at once and
-// refreshed in the background, at most once a minute), and on the lock screen:
-// early.html, put in the screen's index.html before power-menu.js (like the
-// sidekey app's: mobile.js takes every other key on the lock screen) -- right
-// shows the quotas over the clock, left goes back.
-//   GET /quota            {ok, at, accounts: the panel's, as they are}
+// 配额 (aiquota): quota-tray's dashboard on the E5.  The data is quota-tray's own payload, made
+// on the NAS by quota-export.py (quota-tray.py's fetch, imported as it is) and served by
+// e5rec_server.py GET /v1/quota -- through the 录音 app's NAS settings (upload_url,
+// upload_token, the pinned /etc/e5rec/nas.pem).  The last answer is served at once and
+// refreshed in the background, at most once a minute; only one with accounts in it replaces it.
+// On the lock screen: early.html, put in the screen's index.html before power-menu.js (like
+// the sidekey app's: mobile.js takes every other key on the lock screen).
+//   GET /quota            {ok, age, accounts, recommend, sites, updated_at, error}
 //   GET /notifications    (the minute check: early.html put in, if not)
 import { readfile, writefile, rename, stat, unlink, mkdir } from 'fs';
 
 const APP = '/etc/e5-infoscreen/plugins/aiquota';
-const RUN = '/tmp/run/e5-aiquota', CACHE = RUN + '/quota.json';
+const RUN = '/tmp/run/e5-aiquota', CACHE = RUN + '/quota.json', HDR = RUN + '/nas-auth.hdr';
+const NAS_CERT = '/etc/e5rec/nas.pem';
 const INDEX = '/usr/share/e5-infoscreen/www/index.html';
 const ANCHOR = '<script src="power-menu.js"></script>\n';
 const BEGIN = '<script>/* BEGIN e5-aiquota', END = '/* END e5-aiquota */</script>\n';
-const URL = 'http://47.105.105.85:18418/api/quota';
 const TTL = 60;
 
 return function(ctx) {
-	function refresh() {
+	function fail(msg, code) {
+		return { status: code ?? 502, type: 'application/json', body: sprintf('%J', { ok: false, error: msg }) };
+	}
+	function nas() {
+		let c = ctx.uci();
+		let url = c.get('e5-plugin-recorder', 'settings', 'upload_url'), token = c.get('e5-plugin-recorder', 'settings', 'upload_token');
+		if (!url || !token || !stat(NAS_CERT)) return null;
+		// (it goes into a shell command: only https://host[:port])
+		if (!match(url, /^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?$/)) return null;
+		return { url, token };
+	}
+	function refresh(n) {
 		mkdir(RUN);
-		if (stat(RUN + '/fetching') && time() - (stat(RUN + '/fetching').mtime ?? 0) < 40) return;
+		ctx.run(`chmod 700 '${RUN}'`);
+		let f = stat(RUN + '/fetching');
+		if (f && time() - (f.mtime ?? 0) < 90) return;
 		writefile(RUN + '/fetching', '');
-		// (only a real answer replaces the last good one: not an error page, not {"error": ...})
-		ctx.run(`setsid sh -c "curl -sf -m 30 --noproxy '*' -o '${CACHE}.new' '${URL}' && jsonfilter -i '${CACHE}.new' -e '@.accounts[0]' >/dev/null && mv -f '${CACHE}.new' '${CACHE}'; rm -f '${CACHE}.new' '${RUN}/fetching'" </dev/null >/dev/null 2>&1 &`);
+		// (the token in a header file only root reads, not on a command line)
+		let hdr = 'Authorization: Bearer ' + n.token + '\n';
+		if (readfile(HDR) != hdr) {
+			writefile(HDR + '.new', hdr);
+			rename(HDR + '.new', HDR);
+		}
+		ctx.run(`setsid sh -c "curl -sf -m 40 --noproxy '*' --cacert '${NAS_CERT}' -H @'${HDR}' -o '${CACHE}.new' '${n.url}/v1/quota' && jsonfilter -i '${CACHE}.new' -e '@.accounts[0]' >/dev/null && mv -f '${CACHE}.new' '${CACHE}'; rm -f '${CACHE}.new' '${RUN}/fetching'" </dev/null >/dev/null 2>&1 &`);
 	}
 	function cut(src) {
 		let a = index(src, BEGIN);
@@ -54,12 +73,16 @@ return function(ctx) {
 	return {
 		'GET /quota': function(req) {
 			checks();
-			let st = stat(CACHE), age = st ? time() - st.mtime : null;
-			if (age == null || age >= TTL) refresh();
+			let n = nas();
+			if (!n) return fail('还没设置 NAS（在「录音」应用里）', 409);
+			let st = stat(CACHE);
+			if (!st || time() - st.mtime >= TTL) refresh(n);
 			let d = null;
 			try { d = json(readfile(CACHE) ?? 'null'); } catch (e) {}
-			if (!d) return { ok: true, accounts: null, loading: true };
-			return { ok: true, at: st.mtime, age, accounts: d.accounts ?? [] };
+			if (type(d) != 'object') return { ok: true, accounts: null, loading: true };
+			// (how old the data is: from when the NAS made it, not when it came here)
+			let made = type(d.generated_at_ms) == 'int' ? d.generated_at_ms / 1000 : st.mtime;
+			return { ok: true, ...d, age: time() - made };
 		},
 		'GET /notifications': function(req) {
 			checks();
