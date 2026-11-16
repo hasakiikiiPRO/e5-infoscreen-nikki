@@ -56,18 +56,32 @@ def log(*a):
     print(time.strftime('%F %T'), *a, flush=True)
 
 
+_state_lock = __import__('threading').RLock()
+
+
 def load_state():
     try:
-        return json.loads(STATE.read_text())
+        st = json.loads(STATE.read_text())
+        return st if isinstance(st, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def save_state(st):
     ROOT.mkdir(parents=True, exist_ok=True)
-    tmp = STATE.with_suffix('.tmp')
+    # (each writer its own temp file: two threads on one name could interleave into bad JSON)
+    tmp = STATE.with_name(f'{STATE.name}.{os.getpid()}.{__import__("threading").get_ident()}.tmp')
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1))
     tmp.replace(STATE)
+
+
+def update_state(fn):
+    """Read, change (fn(st)), write -- one at a time across the threads of this process."""
+    with _state_lock:
+        st = load_state()
+        fn(st)
+        save_state(st)
+        return st
 
 
 # ---------- reaching the E5 ----------
@@ -406,19 +420,19 @@ def _transcribe():
         meta = {}
         try:
             meta = json.loads(mp3.with_suffix('.json').read_text())
+            meta = meta if isinstance(meta, dict) else {}
         except (OSError, ValueError):
             pass
         m = NAME.match(re.sub(r'-dup\d+$', '', mp3.stem))
-        start = meta.get('start') or int(time.mktime(time.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')))
+        start = meta.get('start') if isinstance(meta.get('start'), int) else None
+        start = start or int(time.mktime(time.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S')))
         t0 = time.monotonic()
         try:
             segs, secs = transcribe_file(mp3)
         except Exception as e:
             log(f'transcribe: {mp3.name} failed: {e}')
             failed[mp3.stem] = failed.get(mp3.stem, 0) + 1
-            st = load_state()
-            st['failed'] = failed
-            save_state(st)
+            update_state(lambda st: st.setdefault('failed', {}).__setitem__(mp3.stem, failed[mp3.stem]))
             continue
         out = {'name': mp3.stem, 'start': start, 'seconds': round(secs, 1), 'segments': segs}
         mp3.with_suffix('.transcript.json').write_text(json.dumps(out, ensure_ascii=False, indent=1))

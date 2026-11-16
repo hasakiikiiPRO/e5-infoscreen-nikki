@@ -178,6 +178,14 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 - 部署：`e5rec/nas/e5rec-server.service`（systemd 用户服务，`E5REC_ROOT` 指录音目录）；`server.json` 放口令、证书路径；`~/.config/e5rec/config.json` 设 `"asr": "deepseek"` 和 `deepseek_api_key`（见 `config.example.json`）。
 - MCP 直接跑在 NAS 上：`ssh nas 'cd … && E5REC_ROOT=… E5REC_NAS=1 exec .venv/bin/python -u mcp_server.py'`，数据只有 NAS 一份。
 
+### 查看：E5 屏幕、手机/电脑网页、AI 总结（1.4 起）
+
+- **AI 总结**（`e5sum.py`，DeepSeek `deepseek-flash`）：每段转写完自动生成标题、1–3 句摘要、要点、待办；每天一份当日总结（概括、时间线、待办，当天最多每 15 分钟更新一次）。没说话的段不调用。模型返回的不是 JSON 对象就当失败，同一段连续失败 3 次跳过，不挡后面的。
+- **E5 屏幕**：录音应用按 → 进「转写」页：每天一行「AI 当日总结」，下面是当天各段（标题、时间、摘要、待办数）；确定打开看要点、待办和逐句全文；↑↓ 滚动，返回键回列表。经应用后端转发到 NAS（同一张钉死的证书和口令，口令放在 root 才能读的头文件里），每次结果都缓存，没网时显示上次的内容。
+- **网页**（`web.html`，NAS 同一个端口 `/`）：密码登录，按日期翻看、搜索（高亮）、逐句时间可点、直接播放原声（支持拖动）。会话是服务端随机生成的，90 天；退出或改密码即失效。登录全局串行、失败后等待时间翻倍、连错 10 次锁 1 小时（frp 后所有客户端都是 127.0.0.1，没法按 IP 限）。自签证书，第一次访问请先核对指纹。
+- 服务端同时最多 64 个请求，请求头 20 秒内必须收完。只读接口：`/v1/recent`、`/v1/rec/<名>`、`/v1/days`、`/v1/day/<日期>`、`/v1/search?q=`、`/v1/audio/<名>`（Bearer 口令或网页会话）。
+- MCP 多了 `e5rec_summary`（某天的 AI 总结和待办）。
+
 ### 电脑上（`e5rec/`，可选的旧方式）
 
 - `e5rec.py run`：找到 E5（先试 USB 192.168.9.1，再试上次的地址、邻居表里的 MAC，最后扫描局域网），用专用 SSH 密钥登录，**E5 的主机密钥首次连接后固定**（`~/.config/e5rec/known_hosts`）。

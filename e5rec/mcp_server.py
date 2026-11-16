@@ -43,6 +43,9 @@ TOOLS = [
          'date_from': DATE, 'date_to': DATE,
          'limit': {'type': 'integer', 'description': '最多几句，默认 50', 'default': 50}},
          'required': ['query']}},
+    {'name': 'e5rec_summary',
+     'description': '某一天的 AI 总结（当日概括、时间线、待办）以及当天每段录音的标题和摘要。用于"我今天/那天都干了什么、说了要做什么"。',
+     'inputSchema': {'type': 'object', 'properties': {'date': {**DATE, 'description': '日期 YYYY-MM-DD，默认今天'}}}},
     {'name': 'e5rec_transcript',
      'description': '读取一段录音的完整文字稿（每句带时间），或某一天某个时间段内所有录音的文字。',
      'inputSchema': {'type': 'object', 'properties': {
@@ -168,8 +171,27 @@ def t_transcript(a):
     return {**head, 'sentences': len(rows), 'text': text}
 
 
+def t_summary(a):
+    import e5sum
+    c = con()
+    e5sum.tables(c)
+    day = a.get('date') or time.strftime('%Y-%m-%d')
+    d = c.execute('select at, json from daily where day=?', (day,)).fetchone()
+    recs = []
+    for r in c.execute('select r.name, r.start, r.seconds, s.json from recordings r left join summaries s on s.name = r.name '
+                       'where r.day = ? order by r.start', (day,)):
+        sj = json.loads(r['json']) if r['json'] else None
+        if sj and sj.get('empty'):
+            continue
+        recs.append({'name': r['name'], 'start': fmt(r['start']), 'minutes': round((r['seconds'] or 0) / 60, 1),
+                     **({k: sj.get(k) for k in ('title', 'summary', 'todos')} if sj else {'summary': '（还没总结）'})})
+    return {'date': day, 'day_summary': json.loads(d['json']) if d else None,
+            'day_summary_at': fmt(d['at']) if d else None, 'recordings': recs}
+
+
 HANDLERS = {'e5rec_status': t_status, 'e5rec_record': t_record, 'e5rec_sync_now': t_sync,
-            'e5rec_list': t_list, 'e5rec_search': t_search, 'e5rec_transcript': t_transcript}
+            'e5rec_list': t_list, 'e5rec_search': t_search, 'e5rec_transcript': t_transcript,
+            'e5rec_summary': t_summary}
 
 
 def reply(id_, result=None, error=None):

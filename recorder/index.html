@@ -6,76 +6,111 @@
 <title>录音</title>
 <style>
 	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8;
-		--green:#42d391; --red:#ff5a5a; --amber:#f0b44c; }
+		--green:#42d391; --red:#ff5a5a; --amber:#f0b44c; --blue:#6aa8ff; }
 	* { box-sizing: border-box; }
 	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
 		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
-	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; overflow-y: auto; scrollbar-width: none; }
+	body { display: flex; flex-direction: column; }
 	[hidden] { display: none !important; }
+	.tabs { display: flex; gap: 4px; padding: 8px 12px 6px; flex-shrink: 0; align-items: center; }
+	.tabs b { padding: 3px 10px; border-radius: 8px; color: var(--dim); font-weight: 600; font-size: 15px; }
+	.tabs b.on { background: var(--card); color: var(--text); }
+	.tabs span { margin-left: auto; font-size: 11px; color: var(--dim); }
+	.page { flex: 1; overflow-y: auto; scrollbar-width: none; padding: 0 12px 10px; display: flex; flex-direction: column; gap: 7px; }
 	button { font: inherit; color: inherit; border: 0; background: var(--card); border-radius: 10px; cursor: none; outline: none;
-		padding: 11px 12px; font-weight: 600; flex-shrink: 0; }
-	button.focus { box-shadow: 0 0 0 2px #dce8ff; }
+		padding: 11px 12px; font-weight: 600; flex-shrink: 0; text-align: left; }
+	.focus { box-shadow: 0 0 0 2px #dce8ff; }
 	button:active { filter: brightness(1.25); }
-	.heading { display: flex; align-items: center; justify-content: space-between; height: 23px; flex-shrink: 0; }
-	.heading strong { font-size: 16px; }
-	.heading span { font-size: 11px; color: var(--dim); }
-	.card { background: var(--card); border-radius: 10px; padding: 10px 12px; flex-shrink: 0; }
-	.big { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 18px 12px; }
+	.card { background: var(--card); border-radius: 10px; padding: 9px 11px; flex-shrink: 0; }
+	.big { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 18px 12px; text-align: center; }
 	.dot { width: 64px; height: 64px; border-radius: 50%; background: #2a3442; display: flex; align-items: center; justify-content: center; }
 	.dot i { width: 26px; height: 26px; border-radius: 50%; background: #5d6b7c; }
 	.rec .dot { background: #4a1c1f; } .rec .dot i { background: var(--red); border-radius: 6px; animation: blink 1.2s ease-in-out infinite; }
 	@keyframes blink { 50% { opacity: .35; } }
 	.time { font: 600 26px "DejaVu Sans", sans-serif; font-variant-numeric: tabular-nums; }
-	.label { color: var(--dim); font-size: 12px; text-align: center; }
-	.row { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-top: 4px; }
+	.label { color: var(--dim); font-size: 12px; }
+	.row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--dim); margin-top: 4px; }
 	.row:first-child { margin-top: 0; }
 	.row b { color: var(--text); font-weight: 500; }
 	.alert { border-radius: 10px; padding: 8px 11px; font-size: 12px; line-height: 1.5; flex-shrink: 0; background: #402229; color: #ffb0b0; }
-	.files .row b { font-variant-numeric: tabular-nums; }
 	.note { color: var(--dim); font-size: 11px; line-height: 1.5; }
+	/* 转写 */
+	.item { font-weight: 400; }
+	.item .t { display: flex; justify-content: space-between; gap: 8px; }
+	.item .t b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.item .t span { color: var(--dim); font-size: 12px; flex-shrink: 0; }
+	.item .s { color: var(--dim); font-size: 12px; line-height: 1.45; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+	.item.day { background: #16233a; }
+	.item .todo { color: var(--amber); font-size: 12px; margin-top: 2px; }
+	.doc h3 { margin: 0 0 4px; font-size: 16px; }
+	.doc p { margin: 4px 0; line-height: 1.55; }
+	.doc ul { margin: 4px 0; padding-left: 18px; line-height: 1.5; }
+	.doc .sec { color: var(--dim); font-size: 12px; margin-top: 6px; }
+	.doc .todo li { color: var(--amber); }
+	.seg { display: flex; gap: 8px; line-height: 1.5; padding: 2px 0; }
+	.seg time { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; flex-shrink: 0; padding-top: 1px; }
+	.hint { color: var(--dim); font-size: 11px; text-align: center; padding: 4px 0 6px; flex-shrink: 0; }
 </style>
 </head>
 <body>
-<header class="heading"><strong>录音</strong><span id="free"></span></header>
-<div id="err" class="alert" hidden></div>
-<button id="toggle" class="card big">
-	<div class="dot"><i></i></div>
-	<div class="time" id="time">00:00</div>
-	<div class="label" id="label">按确定开始录音</div>
-</button>
-<section class="card">
-	<div class="row"><span>待上传</span><b id="pending">—</b></div>
-	<div class="row"><span>上次上传</span><b id="sync">—</b></div>
-</section>
-<section class="card files" id="files"></section>
-<div class="note">每段录完就自动上传到 NAS（流量或 WiFi 都行），NAS 确认收到后删除本机文件并转成文字；没网时先存在本机，有网再补传。录音时锁屏左上角会显示红点，设备不会休眠。</div>
+<div class="tabs"><b id="tabRec" class="on">录音</b><b id="tabTx">转写</b><span id="free"></span></div>
+
+<!-- 录音 -->
+<div class="page" id="pageRec">
+	<div id="err" class="alert" hidden></div>
+	<button id="toggle" class="card big focus">
+		<div class="dot"><i></i></div>
+		<div class="time" id="time">00:00</div>
+		<div class="label" id="label">按确定开始录音</div>
+	</button>
+	<section class="card">
+		<div class="row"><span>待上传</span><b id="pending">—</b></div>
+		<div class="row"><span>上次上传</span><b id="sync">—</b></div>
+	</section>
+	<section class="card" id="files"></section>
+	<div class="note">每段录完就自动上传到 NAS（流量或 WiFi 都行），NAS 确认收到后删除本机文件，转成文字并做 AI 总结。按 → 看转写。录音时锁屏左上角有红点，设备不会休眠。</div>
+</div>
+
+<!-- 转写：列表 -->
+<div class="page" id="pageList" hidden></div>
+<!-- 转写：一段 / 一天 -->
+<div class="page doc" id="pageDoc" hidden></div>
+<div class="hint" id="hint" hidden></div>
 
 <script src="/sdk/e5.js"></script>
 <script>
 'use strict';
 const $ = (id) => document.getElementById(id);
-let st = null, busy = false, timer = null, tick = null;
+let st = null, busy = false, timer = null;
+let view = 'rec';                 // rec | list | doc
+let items = [], sel = 0, listData = null, listAt = 0;
 const mmss = (s) => { s = Math.max(0, s | 0); const h = s / 3600 | 0, m = (s % 3600) / 60 | 0;
 	return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s % 60).padStart(2, '0'); };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const p2 = (n) => String(n).padStart(2, '0');
+const hm = (t) => { const d = new Date(t * 1000); return `${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+const hms = (t) => { const d = new Date(t * 1000); return `${hm(t)}:${p2(d.getSeconds())}`; };
+const ymd = (t) => { const d = new Date(t * 1000); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+const md = (t) => { const d = new Date(t * 1000); return `${d.getMonth() + 1}/${d.getDate()}`; };
+const dur = (s) => s >= 60 ? `${Math.round(s / 60)}分` : `${s}秒`;
 
+/* ---------- 录音 ---------- */
 function render() {
 	const s = st ?? {};
 	const rec = !!(s.fresh && s.recording);
-	document.body.classList.toggle('rec', rec);
 	$('toggle').classList.toggle('rec', rec);
 	$('label').textContent = rec ? '录音中 · 按确定停止'
 		: s.enabled ? (s.call ? '通话中，挂断后自动继续' : '准备录音…') : '按确定开始录音';
 	$('time').textContent = rec ? mmss(s.current_s) : '00:00';
-	$('free').textContent = s.free_mb != null ? `剩余空间 ${(s.free_mb / 1024).toFixed(1)} GB` : '';
+	$('free').textContent = s.free_mb != null ? `剩 ${(s.free_mb / 1024).toFixed(1)} GB` : '';
 	$('err').textContent = s.service === false ? '后台服务没有运行' : (s.error ?? '');
 	$('err').hidden = !$('err').textContent;
-	$('pending').textContent = s.pending != null ? `${s.pending} 个文件 · ${s.pending_mb} MB` : '—';
-	$('sync').textContent = s.upload_error ? `上传失败：${s.upload_error}` : s.last_sync_at ? `${s.last_sync_at}（${s.last_sync_files ?? 0} 个）` : '还没有同步过';
+	$('pending').textContent = s.pending != null ? `${s.pending} 个 · ${s.pending_mb} MB` : '—';
+	$('sync').textContent = s.upload_error ? `失败：${s.upload_error}` : s.last_sync_at ? `${s.last_sync_at}（${s.last_sync_files ?? 0} 个）` : '还没有上传过';
 	const fl = s.files ?? [];
 	$('files').innerHTML = fl.length
-		? fl.slice(0, 6).map((f) => `<div class="row"><span>${esc(f.start ?? f.name)}</span><b>${f.seconds != null ? mmss(f.seconds) : '—'} · ${f.mb.toFixed(1)} MB</b></div>`).join('')
-		: '<div class="row"><span>本机没有待同步的录音</span></div>';
+		? fl.slice(0, 5).map((f) => `<div class="row"><span>${esc(f.start ?? f.name)}</span><b>${f.seconds != null ? mmss(f.seconds) : '—'} · ${f.mb.toFixed(1)} MB</b></div>`).join('')
+		: '<div class="row"><span>本机没有待上传的录音</span></div>';
 }
 
 async function refresh() {
@@ -94,15 +129,120 @@ $('toggle').onclick = async () => {
 	finally { busy = false; }
 	refresh();
 };
+setInterval(() => { if (st?.recording) { st.current_s = (st.current_s ?? 0) + 1; $('time').textContent = mmss(st.current_s); } }, 1000);
 
-// (the clock between polls)
-tick = setInterval(() => { if (st?.recording) { st.current_s = (st.current_s ?? 0) + 1; $('time').textContent = mmss(st.current_s); } }, 1000);
+/* ---------- 转写 ---------- */
+function show(v) {
+	view = v;
+	$('pageRec').hidden = v != 'rec';
+	$('pageList').hidden = v != 'list';
+	$('pageDoc').hidden = v != 'doc';
+	$('tabRec').classList.toggle('on', v == 'rec');
+	$('tabTx').classList.toggle('on', v != 'rec');
+	$('hint').hidden = v == 'rec';
+	$('hint').textContent = v == 'list' ? '↑↓ 选择 · 确定 打开 · → 刷新 · ← 录音' : '↑↓ 滚动 · 返回 回列表';
+}
+
+function listHTML(d) {
+	const recs = d.recordings ?? [];
+	items = [];
+	let html = d.stale ? `<div class="alert">${esc(d.error)}</div>` : '';
+	if (d.transcribing?.length) html += `<div class="card label">NAS 正在转写 ${d.transcribing.length} 段…</div>`;
+	// each day's AI summary, then that day's recordings, newest first
+	const days = [...new Set(recs.map((r) => ymd(r.start)))];
+	const today = ymd(Date.now() / 1000);
+	for (const day of days) {
+		const label = day == today ? '今天' : day.slice(5).replace('-', '/');
+		items.push({ kind: 'day', day });
+		html += `<button class="item day" data-i="${items.length - 1}"><div class="t"><b>${label} · AI 当日总结</b><span>›</span></div></button>`;
+		for (const r of recs.filter((r) => ymd(r.start) == day)) {
+			items.push({ kind: 'rec', name: r.name });
+			const title = r.title || (r.empty ? '（没有说话）' : r.summarized ? r.opening : '（AI 总结中…）') || r.name;
+			html += `<button class="item" data-i="${items.length - 1}"><div class="t"><b>${esc(title)}</b><span>${hm(r.start)} · ${dur(r.seconds)}</span></div>`
+				+ (r.summary ? `<div class="s">${esc(r.summary)}</div>` : '')
+				+ (r.todos?.length ? `<div class="todo">待办 ${r.todos.length} 条</div>` : '') + '</button>';
+		}
+	}
+	if (!items.length) html += '<div class="card label">还没有转写好的录音</div>';
+	return html;
+}
+
+function focusItem(i) {
+	const els = $('pageList').querySelectorAll('[data-i]');
+	if (!els.length) return;
+	sel = Math.max(0, Math.min(els.length - 1, i));
+	els.forEach((el, k) => el.classList.toggle('focus', k == sel));
+	els[sel].scrollIntoView({ block: 'nearest' });
+}
+
+async function openList(force) {
+	show('list');
+	if (!listData || force || Date.now() - listAt > 30000) {
+		if (!listData) $('pageList').innerHTML = '<div class="card label">正在从 NAS 读取…</div>';
+		try { listData = await e5.api('/nas/recent'); listAt = Date.now(); }
+		catch (e) { if (!listData) { $('pageList').innerHTML = `<div class="alert">${esc(e.message || e)}</div>`; return; } }
+	}
+	if (view != 'list') return;
+	$('pageList').innerHTML = listHTML(listData);
+	focusItem(sel);
+}
+
+async function openItem() {
+	const it = items[sel];
+	if (!it) return;
+	show('doc');
+	const doc = $('pageDoc');
+	doc.innerHTML = '<div class="card label">正在读取…</div>';
+	doc.scrollTop = 0;
+	try {
+		if (it.kind == 'rec') {
+			const r = await e5.api('/nas/rec?name=' + encodeURIComponent(it.name));
+			doc.innerHTML = (r.stale ? `<div class="alert">${esc(r.error)}</div>` : '') + `<div class="card">
+				<h3>${esc(r.title || (r.empty ? '没有说话' : r.name))}</h3><div class="label">${md(r.start)} ${hm(r.start)} · ${dur(r.seconds)} · ${r.sentences} 句</div>
+				${r.summary ? `<p>${esc(r.summary)}</p>` : ''}
+				${r.points?.length ? `<ul>${r.points.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+				${r.todos?.length ? `<div class="sec">待办</div><ul class="todo">${r.todos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+				</div><div class="sec">全文</div><div class="card">`
+				+ ((r.segments ?? []).map((s) => `<div class="seg"><time>${hms(s.t)}</time><span>${esc(s.text)}</span></div>`).join('') || '<div class="label">没有识别到说话</div>')
+				+ '</div>';
+		} else {
+			const d = await e5.api('/nas/day?d=' + it.day);
+			const s = d.summary;
+			doc.innerHTML = (d.stale ? `<div class="alert">${esc(d.error)}</div>` : '') + (s ? `<div class="card">
+				<h3>${esc(s.title)}</h3><div class="label">${it.day} · ${d.recordings.length} 段 · AI 当日总结${d.summary_at ? ' · ' + hm(d.summary_at) + ' 更新' : ''}</div>
+				<p>${esc(s.summary)}</p>
+				${s.todos?.length ? `<div class="sec">待办</div><ul class="todo">${s.todos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+				${s.timeline?.length ? `<div class="sec">时间线</div><ul>${s.timeline.map((x) => `<li>${esc(x.time)} ${esc(x.text)}</li>`).join('')}</ul>` : ''}
+				</div>` : '<div class="card label">这天还没有 AI 总结（有说话的录音转写完后会生成）</div>');
+		}
+	} catch (e) { doc.innerHTML = `<div class="alert">${esc(e.message || e)}</div>`; }
+}
 
 e5.onKey((k) => {
-	if (k.kind == 'ok') { e5.press($('toggle')); return true; }
+	if (view == 'rec') {
+		if (k.kind == 'ok') { e5.press($('toggle')); return true; }
+		if (k.kind == 'right') { openList(); return true; }
+		return false;
+	}
+	if (view == 'list') {
+		if (k.kind == 'up') { focusItem(sel - 1); return true; }
+		if (k.kind == 'down') { focusItem(sel + 1); return true; }
+		if (k.kind == 'ok') { openItem(); return true; }
+		if (k.kind == 'left') { show('rec'); return true; }
+		if (k.kind == 'right') { openList(true); e5.toast('已刷新'); return true; }
+		return false;
+	}
+	if (k.kind == 'up' || k.kind == 'down') { $('pageDoc').scrollBy({ top: k.kind == 'up' ? -120 : 120 }); return true; }
+	if (k.kind == 'left') { openList(); return true; }
 	return false;
 });
-$('toggle').classList.add('focus');
+e5.onBack(() => {
+	if (view == 'doc') { openList(); return true; }
+	if (view == 'list') { show('rec'); return true; }
+	return false;
+});
+
+show('rec');
 render();
 refresh();
 </script>

@@ -4,7 +4,7 @@
 // screen's "● 录音中" mark into the screen's page (the minute check), and serves
 //   GET  /status   what the service last wrote, and the finished files
 //   POST /record   {"on": true|false}
-import { readfile, writefile, rename, stat, unlink, lsdir } from 'fs';
+import { readfile, writefile, rename, stat, unlink, lsdir, popen, mkdir } from 'fs';
 
 const OUT = '/mnt/e5-data/e5rec', RUN = '/tmp/run/e5-recorder';
 const APP = '/etc/e5-infoscreen/plugins/recorder';
@@ -17,6 +17,10 @@ const HTML_BEGIN = '<!-- BEGIN e5-recorder', HTML_END = '<!-- END e5-recorder --
 // update brings them back without it -- the minute check puts it in again,
 // each edit only where its anchor is (another sidekey version: left alone).
 const SK = '/usr/share/e5-infoscreen/www/plugins/sidekey';
+// Reading what the NAS made of the recordings (e5rec_server.py): its read API,
+// with the same pinned certificate and token the uploads use; the last answer
+// of each kept, to show something offline.
+const NAS_CERT = '/etc/e5rec/nas.pem', NAS_HDR = RUN + '/nas-auth.hdr', NAS_CACHE = RUN + '/nas-cache';
 
 return function(ctx) {
 	function fail(msg, code) {
@@ -97,6 +101,41 @@ return function(ctx) {
 		}
 		if (n) ctx.log(`side key: recording choice put in (${n} edits); sidekey re-patches the screen`);
 	}
+	function nas_get(path, key) {
+		let c = ctx.uci();
+		let url = c.get('e5-plugin-recorder', 'settings', 'upload_url'), token = c.get('e5-plugin-recorder', 'settings', 'upload_token');
+		if (!url || !token || !stat(NAS_CERT)) return { status: 409, type: 'application/json',
+			body: sprintf('%J', { ok: false, error: '还没设置 NAS（upload_url / upload_token / 证书）' }) };
+		// (it goes into a shell command: only https://host[:port])
+		if (!match(url, /^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?$/)) return fail('upload_url 格式不对', 409);
+		// (the token and the cached transcripts: root's only)
+		mkdir(RUN); ctx.run(`chmod 700 '${RUN}'`); mkdir(NAS_CACHE);
+		// (the token in a header file, not on a command line anyone can read)
+		let hdr = 'Authorization: Bearer ' + token + '\n';
+		if (readfile(NAS_HDR) != hdr) {
+			writefile(NAS_HDR + '.new', hdr);
+			ctx.run(`chmod 600 '${NAS_HDR}.new'`);
+			rename(NAS_HDR + '.new', NAS_HDR);
+		}
+		let p = popen(`curl -s -m 15 --noproxy '*' --cacert '${NAS_CERT}' -H @'${NAS_HDR}' -w '\n%{http_code}' '${url}${path}' 2>/dev/null`, 'r');
+		let out = p ? p.read('all') : '';
+		if (p) p.close();
+		let nl = rindex(out ?? '', '\n');
+		let code = nl >= 0 ? int(substr(out, nl + 1)) : 0, body = nl >= 0 ? substr(out, 0, nl) : '';
+		let cache = `${NAS_CACHE}/${key}.json`;
+		if (code == 200) {
+			writefile(cache + '.new', body);
+			rename(cache + '.new', cache);
+			return { status: 200, type: 'application/json', body: body };
+		}
+		let old = readfile(cache);
+		if (old != null) {
+			let d = null;
+			try { d = json(old); } catch (e) {}
+			if (d) return { ok: true, ...d, stale: true, error: code ? `NAS 返回 ${code}` : '连不上 NAS，显示的是上次的内容' };
+		}
+		return fail(code ? `NAS 返回 ${code}` : '连不上 NAS（没网？）', 502);
+	}
 	function checks() {
 		if (!ctx.state_get('checked', 60)) {
 			ctx.state_put('checked', { at: time() });
@@ -113,7 +152,7 @@ return function(ctx) {
 	function files() {
 		let out = [];
 		for (let f in (lsdir(OUT) ?? [])) {
-			let m = match(f, /^(rec-[0-9]{8}-[0-9]{6})\.mp3$/);
+			let m = match(f, /^(rec-[0-9]{8}-[0-9]{6}(-[0-9]+)?)\.mp3$/);
 			if (!m) continue;
 			let meta = load(`${OUT}/${m[1]}.json`, {});
 			push(out, { name: m[1], seconds: meta.seconds, start: stamp(meta.start), mb: (stat(`${OUT}/${f}`)?.size ?? 0) / 1048576.0 });
@@ -143,6 +182,19 @@ return function(ctx) {
 			if (!c.commit('e5-plugin-recorder')) return fail('保存失败', 500);
 			ctx.log(on ? 'recording on' : 'recording off');
 			return { ok: true };
+		},
+		'GET /nas/recent': function(req) {
+			return nas_get('/v1/recent?limit=40', 'recent');
+		},
+		'GET /nas/day': function(req) {
+			let d = req.query?.d ?? '';
+			if (!match(d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/)) return fail('日期不对', 400);
+			return nas_get(`/v1/day/${d}`, `day-${d}`);
+		},
+		'GET /nas/rec': function(req) {
+			let n = req.query?.name ?? '';
+			if (!match(n, /^rec-[0-9]{8}-[0-9]{6}(-[0-9]+)?(-dup[0-9]+)?$/)) return fail('录音名不对', 400);
+			return nas_get(`/v1/rec/${n}`, n);
 		},
 		'GET /notifications': function(req) {
 			checks();

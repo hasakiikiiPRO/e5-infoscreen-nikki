@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>E5 录音</title>
+<style>
+	:root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --dim:#6b7686; --line:#e4e7ec; --accent:#2f6fed; --warn:#b45309; --ok:#15803d; }
+	@media (prefers-color-scheme: dark) { :root { --bg:#0f1217; --card:#171b22; --text:#e7eaf0; --dim:#8b95a5; --line:#262c36; --accent:#6b9bff; --warn:#f0b44c; --ok:#4ade80; } }
+	* { box-sizing: border-box; }
+	body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 -apple-system, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; }
+	header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
+	.bar { max-width: 860px; margin: 0 auto; padding: 10px 14px; display: flex; gap: 10px; align-items: center; }
+	.bar h1 { font-size: 17px; margin: 0; white-space: nowrap; cursor: pointer; }
+	.bar input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; }
+	.bar button, button.link { border: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; padding: 6px 4px; }
+	main { max-width: 860px; margin: 0 auto; padding: 12px 14px 60px; }
+	.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+	.card.click { cursor: pointer; }
+	.card.click:hover { border-color: var(--accent); }
+	.row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+	.title { font-weight: 600; }
+	.dim { color: var(--dim); font-size: 13px; }
+	.sum { margin-top: 4px; }
+	h2 { font-size: 15px; margin: 18px 0 8px; color: var(--dim); font-weight: 600; }
+	ul { margin: 6px 0 0; padding-left: 20px; }
+	.todo li::marker { content: "☐ "; }
+	.seg { display: flex; gap: 10px; padding: 3px 0; }
+	.seg time { color: var(--dim); font-variant-numeric: tabular-nums; flex-shrink: 0; cursor: pointer; }
+	.seg time:hover { color: var(--accent); }
+	mark { background: #fde68a; color: #1d2330; border-radius: 3px; }
+	audio { width: 100%; margin-top: 8px; }
+	.tag { display: inline-block; font-size: 12px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--dim); }
+	.tag.warn { color: var(--warn); border-color: currentColor; }
+	#login { max-width: 360px; margin: 80px auto; }
+	#login input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; }
+	#login button { width: 100%; padding: 10px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+	.err { color: #dc2626; }
+	.empty { color: var(--dim); text-align: center; padding: 30px 0; }
+</style>
+</head>
+<body>
+<header><div class="bar">
+	<h1 id="home">E5 录音</h1>
+	<input id="q" type="search" placeholder="搜你说过的话…" autocomplete="off" hidden>
+	<button id="logout" hidden>退出</button>
+</div></header>
+<main id="main"></main>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const p2 = (n) => String(n).padStart(2, '0');
+const hm = (t) => { const d = new Date(t * 1000); return `${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+const hms = (t) => { const d = new Date(t * 1000); return `${hm(t)}:${p2(d.getSeconds())}`; };
+const dur = (s) => s >= 3600 ? `${Math.floor(s / 3600)} 小时 ${Math.round(s % 3600 / 60)} 分` : s >= 60 ? `${Math.round(s / 60)} 分钟` : `${s} 秒`;
+const week = '日一二三四五六';
+const dayLabel = (d) => { const x = new Date(d + 'T00:00:00'); const t = new Date(); t.setHours(0, 0, 0, 0);
+	const n = Math.round((t - x) / 86400000); return (n == 0 ? '今天' : n == 1 ? '昨天' : `${x.getMonth() + 1}月${x.getDate()}日`) + ` 周${week[x.getDay()]}`; };
+const main = $('#main');
+
+async function api(path, opts) {
+	const r = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...opts });
+	if (r.status == 401) { showLogin(); throw new Error('login'); }
+	const d = await r.json();
+	if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+	return d;
+}
+
+function showLogin(msg) {
+	$('#q').hidden = $('#logout').hidden = true;
+	main.innerHTML = `<form id="login" class="card"><div class="title">E5 录音</div><div class="dim">输入密码查看录音转写和 AI 总结</div>
+		<input id="pw" type="password" autocomplete="current-password" placeholder="密码" autofocus>
+		<button>登录</button><div class="err">${esc(msg || '')}</div></form>`;
+	$('#login').onsubmit = async (e) => {
+		e.preventDefault();
+		const r = await fetch('/v1/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ password: $('#pw').value }) });
+		if (r.ok) { location.hash = ''; route(); } else showLogin((await r.json().catch(() => ({}))).error || '密码不对');
+	};
+}
+
+function recCard(r) {
+	const what = r.title || (r.empty ? '（没有说话）' : r.summarized ? '' : '（AI 总结中…）');
+	return `<div class="card click" data-rec="${esc(r.name)}">
+		<div class="row"><span class="title">${esc(what || r.opening || r.name)}</span><span class="dim">${hm(r.start)} · ${dur(r.seconds)}</span></div>
+		${r.summary ? `<div class="sum">${esc(r.summary)}</div>` : r.opening && !r.empty ? `<div class="sum dim">${esc(r.opening)}</div>` : ''}
+		${r.todos.length ? `<div class="dim">待办 ${r.todos.length} 条</div>` : ''}
+	</div>`;
+}
+
+function bindCards() {
+	main.querySelectorAll('[data-rec]').forEach((el) => el.onclick = () => location.hash = '#/rec/' + el.dataset.rec);
+	main.querySelectorAll('[data-day]').forEach((el) => el.onclick = () => location.hash = '#/day/' + el.dataset.day);
+}
+
+async function home() {
+	const [days, recent] = await Promise.all([api('/v1/days?limit=60'), api('/v1/recent?limit=1')]);
+	if (!days.days.length) { main.innerHTML = '<div class="empty">还没有录音</div>'; return; }
+	const today = days.days[0].day;
+	const d = await api('/v1/day/' + today);
+	main.innerHTML = dayHTML(d, recent.transcribing, recent.failed) + (days.days.length > 1 ? '<h2>更早</h2>' : '') + days.days.slice(1).map((x) => `
+		<div class="card click" data-day="${x.day}"><div class="row"><span class="title">${dayLabel(x.day)}</span>
+		<span class="dim">${x.recordings} 段 · ${dur(x.minutes * 60)}</span></div>
+		${x.title ? `<div class="sum">${esc(x.title)}</div>` : ''}</div>`).join('');
+	bindCards();
+}
+
+function dayHTML(d, transcribing, failed) {
+	const s = d.summary;
+	return `<h2>${dayLabel(d.day)}</h2>` + (s ? `<div class="card">
+		<div class="title">${esc(s.title)}</div><div class="sum">${esc(s.summary)}</div>
+		${s.todos?.length ? `<ul class="todo">${s.todos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+		${s.timeline?.length ? `<ul>${s.timeline.map((x) => `<li><span class="dim">${esc(x.time)}</span> ${esc(x.text)}</li>`).join('')}</ul>` : ''}
+		<div class="dim" style="margin-top:6px">AI 当日总结 · ${d.summary_at ? hm(d.summary_at) + ' 更新' : ''}</div></div>`
+		: '<div class="card dim">当日 AI 总结会在有内容的录音转写完后生成</div>')
+		+ (transcribing?.length ? `<div class="card dim">正在转写 ${transcribing.length} 段…</div>` : '')
+		+ (failed?.length ? `<div class="card"><div class="dim">这几段转写失败了（可以直接听）：</div>${failed.map((n) => `<div><a href="/v1/audio/${encodeURIComponent(n)}" target="_blank" rel="noopener">${esc(n)}</a></div>`).join('')}</div>` : '')
+		+ (d.recordings.slice().reverse().map(recCard).join('') || '<div class="empty">这天没有录音</div>');
+}
+
+async function day(dd) { const d = await api('/v1/day/' + dd); main.innerHTML = dayHTML(d); bindCards(); }
+
+async function rec(name) {
+	const r = await api('/v1/rec/' + encodeURIComponent(name));
+	main.innerHTML = `<div class="card">
+		<div class="row"><span class="title">${esc(r.title || r.name)}</span><span class="dim">${new Date(r.start * 1000).toLocaleDateString()} ${hm(r.start)} · ${dur(r.seconds)}</span></div>
+		${r.summary ? `<div class="sum">${esc(r.summary)}</div>` : ''}
+		${r.points.length ? `<ul>${r.points.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+		${r.todos.length ? `<h2>待办</h2><ul class="todo">${r.todos.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+		<audio id="au" controls preload="none" src="/v1/audio/${encodeURIComponent(r.name)}"></audio>
+		</div><h2>全文（点时间从那里播放）</h2><div class="card">` + (r.segments.map((s) => `<div class="seg"><time data-t="${s.t - r.start}">${hms(s.t)}</time><span>${esc(s.text)}</span></div>`).join('')
+		|| '<div class="dim">没有识别到说话</div>') + '</div>';
+	main.querySelectorAll('time[data-t]').forEach((el) => el.onclick = () => { const a = $('#au'); a.currentTime = Math.max(0, +el.dataset.t - 0.5); a.play(); });
+}
+
+async function search(words) {
+	const d = await api('/v1/search?q=' + encodeURIComponent(words));
+	const ws = words.split(/\s+/).filter(Boolean).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+	const re = ws.length ? new RegExp(`(${ws.join('|')})`, 'g') : null;
+	// (split the raw text, escape each piece: marking after escaping would cut into &amp; and the like)
+	const hl = (t) => re ? String(t).split(re).map((x, i) => i % 2 ? `<mark>${esc(x)}</mark>` : esc(x)).join('') : esc(t);
+	main.innerHTML = `<h2>「${esc(words)}」${d.hits.length} 句</h2>` + (d.hits.map((h) => `<div class="card click" data-rec="${esc(h.name)}">
+		<div class="dim">${new Date(h.t * 1000).toLocaleDateString()} ${hms(h.t)}</div><div>${hl(h.text)}</div></div>`).join('') || '<div class="empty">没找到</div>');
+	bindCards();
+}
+
+async function route() {
+	$('#q').hidden = $('#logout').hidden = false;
+	try {
+		let h = location.hash.slice(1);
+		try { h = decodeURIComponent(h); } catch (_) { h = ''; }
+		let m;
+		if ((m = h.match(/^\/rec\/(rec-\d{8}-\d{6}(?:-\d+)?(?:-dup\d+)?)$/))) await rec(m[1]);
+		else if ((m = h.match(/^\/day\/(\d{4}-\d{2}-\d{2})$/))) await day(m[1]);
+		else if ((m = h.match(/^\/search\/(.+)$/))) { $('#q').value = m[1]; await search(m[1]); }
+		else await home();
+		window.scrollTo(0, 0);
+	} catch (e) { if (e.message != 'login') main.innerHTML = `<div class="card err">${esc(e.message)}</div>`; }
+}
+
+$('#home').onclick = () => { location.hash = ''; route(); };
+$('#q').onkeydown = (e) => { if (e.key == 'Enter' && $('#q').value.trim()) location.hash = '#/search/' + $('#q').value.trim(); };
+$('#logout').onclick = async () => { await fetch('/v1/logout', { method: 'POST' }); showLogin(); };
+window.onhashchange = route;
+route();
+</script>
+</body>
+</html>

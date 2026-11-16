@@ -281,25 +281,37 @@ def upload_one(url, token, name):
     finally:
         conn.close()
     if r.status != 200 or not body.get('ok') or body.get('sha256') != want:
-        raise RuntimeError(f'NAS: HTTP {r.status} {body.get("error") or ""}'.strip())
+        err = RuntimeError(f'NAS: HTTP {r.status} {body.get("error") or ""}'.strip())
+        # (4xx: this file will never go -- the next ones should not wait behind it)
+        err.permanent = 400 <= r.status < 500 and r.status not in (401, 408, 429)
+        raise err
     return True
 
 
 def uploader():
     """Every finished recording to the NAS, oldest first; on failure wait longer, up to 5 min."""
     wait = 15
+    refused = set()                     # (refused by the NAS this run: retried after a restart)
     while True:
         url, token = setting('upload_url', ''), setting('upload_token', '')
         if not url or not token or not os.path.exists(NAS_CERT):
             time.sleep(30)
             continue
-        names = [n for n in finished() if os.path.exists(f'{OUT}/{n}.json')]
+        names = [n for n in finished() if os.path.exists(f'{OUT}/{n}.json') and n not in refused]
         sent, err = 0, None
         if names:
             wake(True, UP_WAKE)
             try:
                 for n in names:
-                    upload_one(url, token, n)
+                    try:
+                        upload_one(url, token, n)
+                    except Exception as e:
+                        if not getattr(e, 'permanent', False):
+                            raise
+                        # (kept here, not deleted: shown as an error, the rest go on)
+                        refused.add(n)
+                        log(f'upload: {n} refused by the NAS ({e}), kept on the E5')
+                        continue
                     for ext in ('mp3', 'json'):
                         try:
                             os.unlink(f'{OUT}/{n}.{ext}')
@@ -310,6 +322,8 @@ def uploader():
                 err = str(e) or type(e).__name__
             finally:
                 wake(False, UP_WAKE)
+        if refused and not err:
+            err = f'{len(refused)} 个文件被 NAS 拒收，留在本机'
         if sent:
             write_json(OUT + '/.last_sync', {'at': round(time.time()), 'files': sent, 'host': 'NAS'})
         if err != up_state['error']:
@@ -320,7 +334,8 @@ def uploader():
 
 
 def main():
-    os.makedirs(RUN, exist_ok=True)
+    os.makedirs(RUN, mode=0o700, exist_ok=True)
+    os.chmod(RUN, 0o700)
     # (a segment cut short by a crash or a power loss: what was written is kept, as it is)
     for f in os.listdir(OUT) if os.path.isdir(OUT) else []:
         if f.endswith('.mp3.part'):
