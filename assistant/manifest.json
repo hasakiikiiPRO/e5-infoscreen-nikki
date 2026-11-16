@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "1.1",
+	"version": "1.2",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -75,6 +75,73 @@
 					"label": {
 						"zh": "1 秒",
 						"en": "1 s"
+					}
+				}
+			]
+		},
+		{
+			"id": "continuous",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.continuous",
+			"default": "1",
+			"label": {
+				"zh": "连续对话",
+				"en": "Conversation"
+			},
+			"note": {
+				"zh": "答完自动接着听（震一下），直接说就能追问；6 秒不说话或按中间键结束",
+				"en": "Listens again after each answer"
+			},
+			"options": [
+				{
+					"value": "1",
+					"label": {
+						"zh": "开",
+						"en": "On"
+					}
+				},
+				{
+					"value": "0",
+					"label": {
+						"zh": "关（一问一答）",
+						"en": "Off"
+					}
+				}
+			]
+		},
+		{
+			"id": "boost",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.boost",
+			"default": "8",
+			"label": {
+				"zh": "回答音量",
+				"en": "Answer volume"
+			},
+			"note": {
+				"zh": "在系统音量之上再放大回答的声音（限幅，不会破音）",
+				"en": "On top of the system volume, limited"
+			},
+			"options": [
+				{
+					"value": "0",
+					"label": {
+						"zh": "标准",
+						"en": "Normal"
+					}
+				},
+				{
+					"value": "8",
+					"label": {
+						"zh": "大声",
+						"en": "Louder"
+					}
+				},
+				{
+					"value": "12",
+					"label": {
+						"zh": "最大",
+						"en": "Loudest"
 					}
 				}
 			]

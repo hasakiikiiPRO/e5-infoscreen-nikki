@@ -61,14 +61,17 @@
 
 	function render(s) {
 		if (s.phase == 'starting') return show('<div>准备中……（震一下就可以说了）</div>');
-		if (s.phase == 'listening') return show('<div><span class="mic"></span>在听……说完松开中间键</div>');
+		if (s.phase == 'listening') return show(s.auto
+			? '<div><span class="mic"></span>继续说……（6 秒不说话就结束）</div><div class="st">按中间键结束对话</div>'
+			: '<div><span class="mic"></span>在听……说完松开中间键</div>');
 		if (s.phase == 'thinking') return show('<div>想一下……</div>');
 		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '');
 		if (s.phase == 'speaking') return show(qa + '<div class="st">正在说 · 按中间键停止</div>');
 		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">按中间键关闭</div>`);
 		if (s.phase == 'done') {
 			if (s.cancelled) return hide();
-			show((qa || `<div class="err">${esc(s.error || '没听到问题')}</div>`) + '<div class="st">按中间键关闭</div>');
+			show((qa || `<div class="err">${esc(s.error || '没听到问题')}</div>`)
+				+ `<div class="st">${s.ended ? '对话结束 · ' : ''}按中间键关闭</div>`);
 		}
 	}
 	function follow() {

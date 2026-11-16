@@ -1,7 +1,7 @@
 {
 	"id": "aiquota",
 	"api_version": 2,
-	"version": "1.1",
+	"version": "1.2",
 	"name": {
 		"zh": "配额",
 		"en": "AI quota"

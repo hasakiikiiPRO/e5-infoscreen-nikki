@@ -7,6 +7,7 @@ answer spoken (DeepSeek TTS, 24 kHz mono WAV).  A short memory of the last
 turns lets a follow-up ("那明天呢？") make sense.
 """
 import json
+import subprocess
 import threading
 import time
 import urllib.error
@@ -88,7 +89,7 @@ def answer(question, locked=False):
         msgs += [{'role': 'user', 'content': q}, {'role': 'assistant', 'content': a}]
     msgs.append({'role': 'user', 'content': question})
     body = {'model': 'deepseek-flash', 'thinking': {'type': 'disabled'}, 'max_tokens': 500,
-            'tools': [{'type': 'deepseek_web_search'}], 'messages': msgs}
+            'tools': [{'type': 'deepseek_web_search'}, {'type': 'deepseek_read_url'}], 'messages': msgs}
     out = json.loads(_post(CHAT, body))
     text = (out['choices'][0]['message'].get('content') or '').strip()
     if not locked:
@@ -97,11 +98,23 @@ def answer(question, locked=False):
     return text
 
 
-def speak(text):
-    return _post(TTS, {'text': text[:2000], 'voice_id': VOICE, 'format': 'wav'}, timeout=60)
+def louder(wav, boost_db):
+    """The E5's speaker is capped at Android's own gain and DeepSeek speaks at about -19 dB:
+    raise it, a limiter keeping the peaks under full scale (measured: +8 dB -> -12.7 dB, no clipping)."""
+    if boost_db <= 0:
+        return wav
+    r = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', 'pipe:0', '-af',
+                        f'volume={boost_db}dB,alimiter=limit=0.93:attack=3:release=60:level=disabled',
+                        '-ar', '24000', '-ac', '1', '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'],
+                       input=wav, capture_output=True, timeout=30)
+    return r.stdout if r.returncode == 0 and r.stdout[:4] == b'RIFF' else wav
 
 
-def ask(wav, locked=False):
+def speak(text, boost_db=0):
+    return louder(_post(TTS, {'text': text[:2000], 'voice_id': VOICE, 'format': 'wav'}, timeout=60), boost_db)
+
+
+def ask(wav, locked=False, boost_db=8):
     t0 = time.monotonic()
     question = e5rec.asr_wav(wav)
     t1 = time.monotonic()
@@ -115,7 +128,7 @@ def ask(wav, locked=False):
             reply = '网络不太好，我现在回答不了。'
     t2 = time.monotonic()
     try:
-        audio = speak(reply)
+        audio = speak(reply, boost_db)
     except (urllib.error.URLError, TimeoutError) as e:
         e5rec.log(f'assistant: speech failed: {e}')
         audio = b''

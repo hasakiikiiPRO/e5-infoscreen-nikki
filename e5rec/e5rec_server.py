@@ -381,7 +381,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if len(wav) != n or wav[:4] != b'RIFF' or wav[8:12] != b'WAVE':
             return self.reply(400, {'ok': False, 'error': 'not a WAV'})
         try:
-            r = e5assist.ask(wav, locked=self.headers.get('X-Locked') == '1')
+            try:
+                boost = max(0, min(14, int(self.headers.get('X-Boost') or 8)))
+            except ValueError:
+                boost = 8
+            r = e5assist.ask(wav, locked=self.headers.get('X-Locked') == '1', boost_db=boost)
         except Exception as e:
             log(f'assistant: {e}')
             return self.reply(502, {'ok': False, 'error': '助手出错了'})

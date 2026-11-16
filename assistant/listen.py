@@ -9,7 +9,11 @@
   thinking   the WAV to the NAS (e5rec_server.py POST /v1/assistant: pinned
              certificate, the 录音 app's upload_url / upload_token); "locked": asked
              from the lock screen, the NAS leaves the recordings out of it
-  speaking   the answer through the speaker (e5-volume play)
+  speaking   the answer through the speaker (e5-volume play), raised by the NAS (boost)
+  then, in a conversation (setting "continuous"), listening again by itself: the
+  motor pulses, and what is said is taken from where the sound rises to where it
+  falls quiet (an energy measure: no key to hold); nothing said for WAIT_S, a tap,
+  or MAX_TURNS, and the conversation ends
   done | error
 
 Stop and cancel are files holding the run id they are for: one meant for an
@@ -17,16 +21,19 @@ earlier run, or arriving before this one started, is not taken for this one.
 Each step goes to STATE (with the run id) for the screen.  The recorder's flag
 and the pid file are removed only by the run that wrote them.
 """
+import array
 import base64
 import http.client
 import importlib.util
 import json
+import math
 import os
 import select
 import signal
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import wave
@@ -41,6 +48,12 @@ RATE = 48000
 MAX_S = 60
 MIN_S = 0.6
 NAS_TIMEOUT = 150                       # (the NAS's own worst case: ASR + answer + speech)
+# a conversation's later turns: no key held, the sound tells
+WAIT_S = 6                              # nothing said this long after the pulse: it is over
+TURN_MAX_S = 30
+QUIET_S = 1.3                           # this long quiet after speech: the turn is said (a pause between sentences is ~1.1 s)
+CHUNK = 1440                            # 30 ms at 48 kHz, 16-bit mono: 2880 bytes
+MAX_TURNS = 10
 
 sys.path.insert(0, '/opt/e5')
 spec = importlib.util.spec_from_file_location('e5_capture', '/opt/e5/e5-capture.py')
@@ -56,9 +69,13 @@ def log(msg):
     subprocess.run(['logger', '-t', 'e5-assistant', '--', msg])
 
 
-def uci(key):
-    r = subprocess.run(['uci', '-q', 'get', f'e5-plugin-recorder.settings.{key}'], capture_output=True, text=True)
+def uci(key, conf='e5-plugin-recorder'):
+    r = subprocess.run(['uci', '-q', 'get', f'{conf}.settings.{key}'], capture_output=True, text=True)
     return r.stdout.strip()
+
+
+def setting(key, default):
+    return uci(key, 'e5-plugin-assistant') or default
 
 
 def said(path):
@@ -100,10 +117,18 @@ def call_waiting():
         return False
 
 
-def listen():
-    """-> 16-bit mono PCM at RATE; None when cancelled; raises on a call or no microphone."""
-    with open(WANT, 'w') as f:
-        f.write(ME)
+def buzz(ms=60):
+    subprocess.Popen(['e5-vibrate', str(ms)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def rms(b):
+    a = array.array('h', b)
+    return math.sqrt(sum(x * x for x in a) / len(a)) if a else 0.0
+
+
+def listen(auto=False):
+    """-> 16-bit mono PCM at RATE; None when cancelled; b'' when, listening by itself
+    (auto), nothing was said; raises on a call or no microphone."""
     cap = None
     try:
         # (the recorder looks every 0.25 s and closes its segment: up to ~4 s here)
@@ -129,24 +154,55 @@ def listen():
             raise RuntimeError('松手太快，还没开始录')
         fd = cap.recorder.stdout.fileno()
         pcm = bytearray()
-        state('listening', since=time.time())
-        end = time.monotonic() + MAX_S
-        while time.monotonic() < end and not said(STOP):
+        state('listening', since=time.time(), turn=TURN[0], auto=auto)
+        if auto:
+            buzz()
+        end = time.monotonic() + (TURN_MAX_S if auto else MAX_S)
+        # (auto: the noise floor from the quietest stretch, speech well above it)
+        floor, started, quiet, buf = None, False, 0, bytearray()
+        give_up = time.monotonic() + WAIT_S
+        while time.monotonic() < end and (auto or not said(STOP)):
             if said(CANCEL):
                 return None
             if call_waiting():
                 raise RuntimeError('有来电，不问了')
             r, _, _ = select.select([fd], [], [], 0.1)
-            if r:
-                data = os.read(fd, 65536)
-                if not data:
-                    break
+            if not r:
+                continue
+            data = os.read(fd, 65536)
+            if not data:
+                break
+            if not auto:
                 pcm += data
+                continue
+            buf += data
+            while len(buf) >= CHUNK * 2:
+                chunk, buf = bytes(buf[:CHUNK * 2]), buf[CHUNK * 2:]
+                level = rms(chunk)
+                # (the room's own noise: down at once to the quietest, up only slowly)
+                floor = level if floor is None or level < floor else floor * 1.003
+                floor = max(floor, 30.0)
+                # (measured on this microphone: speech ~150-480, a quiet room ~25-100)
+                loud = level > max(floor * 2.5, 110)
+                pcm += chunk
+                if not started:
+                    # (0.3 s kept before the speech begins)
+                    del pcm[:-CHUNK * 2 * 10]
+                    quiet = quiet + 1 if loud else 0
+                    if quiet >= 3:
+                        started, quiet = True, 0
+                    elif time.monotonic() > give_up:
+                        return b''
+                else:
+                    quiet = 0 if loud else quiet + 1
+                    if quiet * CHUNK / RATE >= QUIET_S:
+                        return bytes(pcm)
+        if auto and not started:
+            return b''
         return bytes(pcm[:len(pcm) // 2 * 2])
     finally:
         if cap is not None:
             cap.stop()
-        drop_mine(WANT)
 
 
 def to_wav(pcm):
@@ -169,7 +225,8 @@ def ask(wav):
                                        context=ssl.create_default_context(cafile=NAS_CERT), timeout=NAS_TIMEOUT)
     try:
         conn.request('POST', '/v1/assistant', body=wav, headers={
-            'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0'})
+            'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0',
+            'X-Boost': setting('boost', '8')})
         r = conn.getresponse()
         body = json.loads(r.read() or b'{}')
     finally:
@@ -221,37 +278,67 @@ def speak(audio):
     subprocess.run("kill $(pgrep -f 'e5-assistant/answer[.]wav') 2>/dev/null", shell=True)
 
 
+TURN = [0]
+
+
+def keep_want(stop):
+    """The recorder's flag for the whole conversation, fresh (it counts as gone after 90 s)."""
+    while not stop.wait(10):
+        try:
+            os.utime(WANT)
+        except OSError:
+            return
+
+
 def main():
     # (a new question kills this one: its finally -- the microphone, the recorder's flag -- must still run)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     os.makedirs(RUN, mode=0o700, exist_ok=True)
     with open(PIDF, 'w') as f:
         f.write(ME)
+    with open(WANT, 'w') as f:
+        f.write(ME)
+    fresh = threading.Event()
+    threading.Thread(target=keep_want, args=(fresh,), daemon=True).start()
     wake(True)
+    continuous = setting('continuous', '1') == '1'
     q = a = None
     try:
         state('starting')
-        pcm = listen()
-        if pcm is None:
-            return state('done', cancelled=True)
-        secs = len(pcm) / 2 / RATE
-        if secs < MIN_S:
-            return state('done', short=True, error='按住时间太短，没录到话')
-        state('thinking', seconds=round(secs, 1))
-        r = ask(to_wav(pcm))
-        if said(CANCEL):
-            return state('done', cancelled=True)
-        q, a = r.get('question') or '', r.get('answer') or ''
-        remember(q, a)
-        state('speaking', question=q, answer=a, timing=r.get('timing'))
-        audio = base64.b64decode(r.get('audio') or '')
-        if audio:
-            speak(audio)
-        state('done', cancelled=said(CANCEL), question=q, answer=a, timing=r.get('timing'))
+        while True:
+            pcm = listen(auto=TURN[0] > 0)
+            if pcm is None:
+                return state('done', cancelled=True, question=q, answer=a)
+            if TURN[0] and not pcm:
+                return state('done', ended=True, question=q, answer=a, turn=TURN[0])
+            secs = len(pcm) / 2 / RATE
+            if secs < MIN_S:
+                return state('done', short=True, error='按住时间太短，没录到话')
+            state('thinking', seconds=round(secs, 1), turn=TURN[0])
+            r = ask(to_wav(pcm))
+            if said(CANCEL):
+                return state('done', cancelled=True)
+            q, a = r.get('question') or '', r.get('answer') or ''
+            remember(q, a)
+            state('speaking', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])
+            audio = base64.b64decode(r.get('audio') or '')
+            if audio:
+                speak(audio)
+            if said(CANCEL):
+                return state('done', cancelled=True, question=q, answer=a)
+            # (nothing heard, or a one-question setting: that is the end of it)
+            if not continuous or not q or TURN[0] + 1 >= MAX_TURNS:
+                return state('done', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])
+            TURN[0] += 1
+            try:
+                os.unlink(STOP)              # (the first turn's release: the later turns hold no key)
+            except FileNotFoundError:
+                pass
     except Exception as e:
         log(f'error: {e}')
         state('error', error=str(e) or type(e).__name__, question=q, answer=a)
     finally:
+        fresh.set()
         wake(False)
         drop_mine(WANT)
         drop_mine(PIDF)
