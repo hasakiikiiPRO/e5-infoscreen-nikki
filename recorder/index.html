@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>录音</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8;
+		--green:#42d391; --red:#ff5a5a; --amber:#f0b44c; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; overflow-y: auto; scrollbar-width: none; }
+	[hidden] { display: none !important; }
+	button { font: inherit; color: inherit; border: 0; background: var(--card); border-radius: 10px; cursor: none; outline: none;
+		padding: 11px 12px; font-weight: 600; flex-shrink: 0; }
+	button.focus { box-shadow: 0 0 0 2px #dce8ff; }
+	button:active { filter: brightness(1.25); }
+	.heading { display: flex; align-items: center; justify-content: space-between; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; }
+	.heading span { font-size: 11px; color: var(--dim); }
+	.card { background: var(--card); border-radius: 10px; padding: 10px 12px; flex-shrink: 0; }
+	.big { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 18px 12px; }
+	.dot { width: 64px; height: 64px; border-radius: 50%; background: #2a3442; display: flex; align-items: center; justify-content: center; }
+	.dot i { width: 26px; height: 26px; border-radius: 50%; background: #5d6b7c; }
+	.rec .dot { background: #4a1c1f; } .rec .dot i { background: var(--red); border-radius: 6px; animation: blink 1.2s ease-in-out infinite; }
+	@keyframes blink { 50% { opacity: .35; } }
+	.time { font: 600 26px "DejaVu Sans", sans-serif; font-variant-numeric: tabular-nums; }
+	.label { color: var(--dim); font-size: 12px; text-align: center; }
+	.row { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); margin-top: 4px; }
+	.row:first-child { margin-top: 0; }
+	.row b { color: var(--text); font-weight: 500; }
+	.alert { border-radius: 10px; padding: 8px 11px; font-size: 12px; line-height: 1.5; flex-shrink: 0; background: #402229; color: #ffb0b0; }
+	.files .row b { font-variant-numeric: tabular-nums; }
+	.note { color: var(--dim); font-size: 11px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<header class="heading"><strong>录音</strong><span id="free"></span></header>
+<div id="err" class="alert" hidden></div>
+<button id="toggle" class="card big">
+	<div class="dot"><i></i></div>
+	<div class="time" id="time">00:00</div>
+	<div class="label" id="label">按确定开始录音</div>
+</button>
+<section class="card">
+	<div class="row"><span>待同步到电脑</span><b id="pending">—</b></div>
+	<div class="row"><span>上次同步</span><b id="sync">—</b></div>
+</section>
+<section class="card files" id="files"></section>
+<div class="note">录音保存在本机，电脑连上后（USB 或同一个 WiFi）自动拉走、转成文字并删除本机文件。录音时锁屏左上角会显示红点，设备不会休眠。</div>
+
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+let st = null, busy = false, timer = null, tick = null;
+const mmss = (s) => { s = Math.max(0, s | 0); const h = s / 3600 | 0, m = (s % 3600) / 60 | 0;
+	return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s % 60).padStart(2, '0'); };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function render() {
+	const s = st ?? {};
+	const rec = !!(s.fresh && s.recording);
+	document.body.classList.toggle('rec', rec);
+	$('toggle').classList.toggle('rec', rec);
+	$('label').textContent = rec ? '录音中 · 按确定停止'
+		: s.enabled ? (s.call ? '通话中，挂断后自动继续' : '准备录音…') : '按确定开始录音';
+	$('time').textContent = rec ? mmss(s.current_s) : '00:00';
+	$('free').textContent = s.free_mb != null ? `剩余空间 ${(s.free_mb / 1024).toFixed(1)} GB` : '';
+	$('err').textContent = s.service === false ? '后台服务没有运行' : (s.error ?? '');
+	$('err').hidden = !$('err').textContent;
+	$('pending').textContent = s.pending != null ? `${s.pending} 个文件 · ${s.pending_mb} MB` : '—';
+	$('sync').textContent = s.last_sync_at ? `${s.last_sync_at}（${s.last_sync_files ?? 0} 个）` : '还没有同步过';
+	const fl = s.files ?? [];
+	$('files').innerHTML = fl.length
+		? fl.slice(0, 6).map((f) => `<div class="row"><span>${esc(f.start ?? f.name)}</span><b>${f.seconds != null ? mmss(f.seconds) : '—'} · ${f.mb.toFixed(1)} MB</b></div>`).join('')
+		: '<div class="row"><span>本机没有待同步的录音</span></div>';
+}
+
+async function refresh() {
+	try { st = await e5.api('/status'); } catch (e) { st = null; }
+	render();
+	clearTimeout(timer);
+	timer = setTimeout(refresh, 3000);
+}
+
+$('toggle').onclick = async () => {
+	if (busy) return;
+	busy = true;
+	const on = !st?.enabled;
+	try { await e5.api('/record', { body: { on } }); e5.toast(on ? '开始录音' : '已停止录音'); }
+	catch (e) { $('err').textContent = e.message || String(e); $('err').hidden = false; }
+	finally { busy = false; }
+	refresh();
+};
+
+// (the clock between polls)
+tick = setInterval(() => { if (st?.recording) { st.current_s = (st.current_s ?? 0) + 1; $('time').textContent = mmss(st.current_s); } }, 1000);
+
+e5.onKey((k) => {
+	if (k.kind == 'ok') { e5.press($('toggle')); return true; }
+	return false;
+});
+$('toggle').classList.add('focus');
+render();
+refresh();
+</script>
+</body>
+</html>

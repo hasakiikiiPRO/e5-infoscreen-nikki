@@ -1,4 +1,4 @@
-# 荣悦 E5 信息屏应用：代理（Nikki）、流量、在家
+# 荣悦 E5 信息屏应用：代理（Nikki）、流量、在家、录音
 
 给荣悦 E5 OpenWrt 的信息屏（机身上那块 320×480 小屏）用的两个应用，都可以直接在设备上操作，不用打开电脑或手机浏览器：
 
@@ -6,7 +6,9 @@
 - **「流量」**（`dataplan/`）：自动发短信向运营商查询套餐，显示剩余流量（锁屏上也有），快用完时提醒，用完自动断开移动数据。
 - **「在家」**（`homewifi/`）：能连上家里 WiFi 时，E5 关掉热点、改用家里网络（不耗 5G 流量，配合热点省电休眠）；家里 WiFi 断开后自动重新打开热点。
 
-三个应用互不依赖，按需安装即可。
+- **「录音」**（`recorder/`）+ 电脑端 **e5rec**（`e5rec/`）：机身麦克风分段录成 MP3，电脑自动同步、离线转文字，并提供 MCP 给 AI 查询。
+
+各应用互不依赖，按需安装即可。
 
 ## 「代理」
 
@@ -150,6 +152,28 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 - `backend.uc`：负责状态查询、立即检查和切换模式；同时安装并维护后台服务（扫描进行中不会重启服务）。
 - `lock-mark.html`：锁屏标识，插入到 `index.html` 中 `app.js` 之后；后台服务不在运行时不显示。
 - `index.html`：应用页面。
+
+## 「录音」+ 电脑端 e5rec
+
+### E5 上（`recorder/`）
+
+- 屏幕上一个按钮开始 / 停止；录音时**锁屏左上角显示红点和时长**。
+- 用系统自己的采集通路（`/opt/e5/e5-capture.py` 的 Capture 和音频硬件租约）录机身麦克风，经 libsndfile（LAME）直接编码成 MP3：48 kHz 单声道，约 33 kbps，**每小时约 15 MB**，CPU 占用约 9%。
+- 按设定时长（默认 30 分钟）分段，写入 `/mnt/e5-data/e5rec/rec-日期-时间.mp3`（旁边一个 `.json` 记开始、时长、结束原因）。正在写的段是 `.mp3.part`。
+- **来电**：通话会申请同一个硬件租约（最多等 5 秒），录音每 0.25 秒检查一次，立刻收尾这一段，挂断后自动接着录。开始录音失败时一定释放租约，不会挡住来电。
+- 录音时持有唤醒锁，设备不深度休眠；服务被杀时 init 脚本的 `service_stopped` 也会释放。剩余空间低于 300 MB 自动停录。
+
+### 电脑上（`e5rec/`）
+
+- `e5rec.py run`：找到 E5（先试 USB 192.168.9.1，再试上次的地址、邻居表里的 MAC，最后扫描局域网），用专用 SSH 密钥登录，**E5 的主机密钥首次连接后固定**（`~/.config/e5rec/known_hosts`）。
+- 逐个文件：在 E5 上算 SHA-256 → 流式拉取边收边算 → 一致且已写入磁盘（fsync）后才删除 E5 上的文件。同名但内容不同的文件另存，不覆盖。
+- 转文字：ffmpeg 解码 → silero VAD 切句 → SenseVoice（sherpa-onnx，离线，中英日韩粤），输出带时钟时间的 `.txt`、`.transcript.json`，并写入 SQLite 索引 `index.db`。连续失败 3 次的文件不再重试。
+- systemd 用户定时器每 5 分钟跑一次（`e5rec/systemd/`）。
+- `mcp_server.py`：stdio MCP，工具 `e5rec_status` / `e5rec_record` / `e5rec_sync_now` / `e5rec_list` / `e5rec_search` / `e5rec_transcript`。开始录音前要求 AI 先得到用户明确同意。
+
+配置见 `e5rec/config.example.json`（复制到 `~/.config/e5rec/config.json`）：E5 的 MAC（热点和连家里 WiFi 时各一个），以及 SenseVoice 模型和 silero_vad.onnx 的路径。E5 上需把 `~/.ssh/e5_rec.pub` 加进 `/etc/dropbear/authorized_keys`。
+
+**隐私**：录别人说话前请先征得同意。
 
 ## 共同
 

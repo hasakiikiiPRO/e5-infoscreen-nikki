@@ -1,0 +1,9 @@
+[Unit]
+Description=E5 recorder: sync recordings from the E5 and transcribe them
+
+[Service]
+Type=oneshot
+ExecStart=%h/cc/e5-recorder/e5rec.py run
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3h

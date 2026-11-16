@@ -1,0 +1,115 @@
+'use strict';
+// 录音 (recorder): the screen half.  recorder.py (under /etc/init.d/e5-recorder)
+// records; this installs that service and keeps it installed, puts the lock
+// screen's "● 录音中" mark into the screen's page (the minute check), and serves
+//   GET  /status   what the service last wrote, and the finished files
+//   POST /record   {"on": true|false}
+import { readfile, writefile, rename, stat, unlink, lsdir } from 'fs';
+
+const OUT = '/mnt/e5-data/e5rec', RUN = '/tmp/run/e5-recorder';
+const APP = '/etc/e5-infoscreen/plugins/recorder';
+const INIT = '/etc/init.d/e5-recorder';
+const INDEX = '/usr/share/e5-infoscreen/www/index.html';
+const INDEX_ANCHOR = '<script src="app.js"></script>\n';
+const HTML_BEGIN = '<!-- BEGIN e5-recorder', HTML_END = '<!-- END e5-recorder -->\n';
+
+return function(ctx) {
+	function fail(msg, code) {
+		return { status: code ?? 502, type: 'application/json', body: sprintf('%J', { ok: false, error: msg }) };
+	}
+	function load(path, def) {
+		try { return json(readfile(path) ?? 'null') ?? def; } catch (e) { return def; }
+	}
+	function service_running() {
+		let s = ctx.ubus('service', 'list', { name: 'e5-recorder' })?.['e5-recorder'];
+		for (let k, inst in (s?.instances ?? {})) if (inst.running) return true;
+		return false;
+	}
+	function ensure_service() {
+		let want = readfile(`${APP}/recorder.init`);
+		if (!want) return;
+		if (readfile(INIT) != want) {
+			ctx.run(`cp '${APP}/recorder.init' '${INIT}.new' && chmod 755 '${INIT}.new' && ` +
+				`mv -f '${INIT}.new' '${INIT}' && '${INIT}' enable && '${INIT}' restart >/dev/null 2>&1`);
+			ctx.log('service installed');
+		} else if (!service_running()) {
+			ctx.run(`'${INIT}' enable; '${INIT}' start >/dev/null 2>&1`);
+		} else if (readfile(`${APP}/recorder.py`) != readfile('/var/run/e5-recorder.running')) {
+			// (a new version: the running segment is closed cleanly on SIGTERM, then it goes on)
+			ctx.run(`setsid '${INIT}' restart >/dev/null 2>&1 &`);
+			ctx.log('service restarted for the new version');
+		}
+	}
+	function cut(src, begin, end) {
+		let a = index(src, begin);
+		if (a < 0) return src;
+		let rest = substr(src, a), b = index(rest, end);
+		return b < 0 ? null : substr(src, 0, a) + substr(rest, b + length(end));
+	}
+	function ensure_lock_mark() {
+		let src = readfile(INDEX), want = readfile(`${APP}/lock-mark.html`);
+		if (src == null || want == null || index(src, want) >= 0) return;
+		src = cut(src, HTML_BEGIN, HTML_END);
+		if (src == null) return;
+		let parts = split(src, INDEX_ANCHOR);
+		if (length(parts) != 2) return;
+		let tmp = INDEX + '.recorder-new';
+		if (writefile(tmp, parts[0] + INDEX_ANCHOR + want + parts[1]) == null || !rename(tmp, INDEX)) {
+			unlink(tmp);
+			return;
+		}
+		ctx.log('index.html patched (the lock screen\'s recording mark), the screen restarts');
+		ctx.run("setsid sh -c 'sleep 2; /etc/init.d/e5-infoscreen restart' >/dev/null 2>&1 &");
+	}
+	function checks() {
+		if (!ctx.state_get('checked', 60)) {
+			ctx.state_put('checked', { at: time() });
+			ensure_service();
+			ensure_lock_mark();
+		}
+	}
+	function stamp(sec) {
+		if (!sec) return null;
+		let t = localtime(sec);
+		return sprintf('%02d-%02d %02d:%02d', t.mon, t.mday, t.hour, t.min);
+	}
+	function files() {
+		let out = [];
+		for (let f in (lsdir(OUT) ?? [])) {
+			let m = match(f, /^(rec-[0-9]{8}-[0-9]{6})\.mp3$/);
+			if (!m) continue;
+			let meta = load(`${OUT}/${m[1]}.json`, {});
+			push(out, { name: m[1], seconds: meta.seconds, start: stamp(meta.start), mb: (stat(`${OUT}/${f}`)?.size ?? 0) / 1048576.0 });
+		}
+		return sort(out, (a, b) => a.name < b.name ? 1 : -1);
+	}
+
+	return {
+		'GET /status': function(req) {
+			checks();
+			let s = load(`${RUN}/state.json`, {});
+			let ls = s.last_sync;
+			return { ok: true, ...s, enabled: ctx.uci().get('e5-plugin-recorder', 'settings', 'enabled') == '1',
+				fresh: time() - (s.at ?? 0) < 30, service: service_running(),
+				last_sync_at: stamp(ls?.at), last_sync_files: ls?.files, files: slice(files(), 0, 20) };
+		},
+		'POST /record': function(req) {
+			let on = req.body?.on;
+			if (type(on) != 'bool') return fail('参数不对', 400);
+			checks();
+			let c = ctx.uci();
+			if (!c.get('e5-plugin-recorder', 'settings')) {
+				if (!stat('/etc/config/e5-plugin-recorder')) writefile('/etc/config/e5-plugin-recorder', '');
+				c.set('e5-plugin-recorder', 'settings', 'settings');
+			}
+			c.set('e5-plugin-recorder', 'settings', 'enabled', on ? '1' : '0');
+			if (!c.commit('e5-plugin-recorder')) return fail('保存失败', 500);
+			ctx.log(on ? 'recording on' : 'recording off');
+			return { ok: true };
+		},
+		'GET /notifications': function(req) {
+			checks();
+			return { notifications: [] };
+		}
+	};
+};

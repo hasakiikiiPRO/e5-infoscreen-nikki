@@ -1,0 +1,5 @@
+{
+  "macs": ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"],
+  "sensevoice": "/path/to/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
+  "vad": "/path/to/silero_vad.onnx"
+}

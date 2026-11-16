@@ -1,0 +1,54 @@
+<!-- BEGIN e5-recorder (the recorder app, /etc/e5-infoscreen/plugins/recorder) -->
+<script>
+// "● 录音中" at the top of the lock screen while the recorder app records --
+// recording must never go unnoticed.  From GET /api/plugins/recorder/status
+// every 10 s while the screen is lit.  Without the app (404) the mark goes.
+(function () {
+	const API = '/api/plugins/recorder/status', EVERY = 10000;
+	const css = document.createElement('style');
+	css.textContent =
+		'#lock-rec { display: none; position: absolute; top: 10px; left: 14px; color: #ff6b6b;' +
+		' font-size: calc(11px * var(--ui-scale, 1)); font-weight: 600; letter-spacing: .5px; }' +
+		'#lock-rec.on { display: block; } #lock-rec i { display: inline-block; width: 7px; height: 7px; border-radius: 50%;' +
+		' background: #ff4d4d; margin-right: 5px; vertical-align: 1px; animation: lockrec 1.2s ease-in-out infinite; }' +
+		'@keyframes lockrec { 50% { opacity: .25; } }';
+	document.head.appendChild(css);
+	let mark = null, gone = false, timer = null;
+	function place() {
+		const ls = document.getElementById('mobile-lockscreen');
+		if (!ls) return false;
+		mark = document.createElement('div');
+		mark.id = 'lock-rec';
+		mark.innerHTML = '<i></i><span></span>';
+		ls.appendChild(mark);
+		return true;
+	}
+	const lit = () => !document.hidden && !(typeof blank !== 'undefined' && blank);
+	const mmss = (s) => { s = Math.max(0, s | 0); const h = s / 3600 | 0, m = (s % 3600) / 60 | 0;
+		return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0'); };
+	async function poll() {
+		clearTimeout(timer);
+		if (gone || !mark) return;
+		if (lit()) {
+			try {
+				const r = await fetch(API, { cache: 'no-store' });
+				if (r.status == 404) { gone = true; mark.remove(); return; }
+				if (r.ok) {
+					const s = await r.json();
+					const on = !!(s.fresh && s.recording);
+					mark.classList.toggle('on', on);
+					mark.querySelector('span').textContent = on ? '录音中 ' + mmss(s.current_s) : '';
+				}
+			} catch (e) { /* the next poll */ }
+		}
+		timer = setTimeout(poll, EVERY);
+	}
+	(function start(n) {
+		if (place()) poll();
+		else if (n < 20) setTimeout(() => start(n + 1), 500);
+	})(0);
+	let wasLit = lit();
+	setInterval(() => { const now = lit(); if (now && !wasLit) poll(); wasLit = now; }, 1000);
+})();
+</script>
+<!-- END e5-recorder -->

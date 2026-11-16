@@ -1,0 +1,23 @@
+#!/bin/sh /etc/rc.common
+# 录音 (recorder): the info screen app's background service
+# (/etc/e5-infoscreen/plugins/recorder/recorder.py).  Installed by the app's
+# backend; the service removes this script when the app is removed.
+START=99
+USE_PROCD=1
+
+SCRIPT=/etc/e5-infoscreen/plugins/recorder/recorder.py
+
+start_service() {
+	[ -f "$SCRIPT" ] || return 0
+	procd_open_instance
+	procd_set_param command /usr/bin/python3 "$SCRIPT"
+	procd_set_param respawn 3600 5 0
+	procd_set_param term_timeout 10
+	procd_close_instance
+}
+
+# (the wake lock is not the process's: a kill would leave the device awake for good)
+service_stopped() {
+	echo e5-recorder > /sys/power/wake_unlock 2>/dev/null
+	return 0
+}
