@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>配额</title>
+<style>
+	:root { color-scheme: dark; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e13; color: #e8ecf2;
+		font: 14px/1.45 "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; }
+	h4 { margin: 0 0 8px; font-size: 16px; display: flex; justify-content: space-between; align-items: baseline; flex-shrink: 0; }
+	h4 span { font-size: 11px; color: #8997a8; font-weight: 400; }
+	#list { flex: 1; overflow-y: auto; scrollbar-width: none; }
+</style>
+</head>
+<body>
+<h4>AI 配额<span id="age"></span></h4>
+<div id="list"><div class="qr">正在读取…</div></div>
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+	// the panel's accounts -> rows; the WorkBuddy accounts (a pool of many) as one
+	const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+	function left(ms) {
+		let s = Math.max(0, Math.floor((ms - Date.now()) / 1000));
+		const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+		return d ? `${d}天${h}时` : h ? `${h}时${m}分` : `${m}分`;
+	}
+	function bar(p, status) {
+		const c = status == 'rate-limited' || p >= 90 ? '#ff6b6b' : p >= 60 || status == 'warn' ? '#f0b44c' : '#42d391';
+		return `<i class="qb"><i style="width:${Math.min(100, Math.max(0, p))}%;background:${c}"></i></i>`;
+	}
+	function line(w) {
+		const p = w.percent;
+		return `<div class="ql"><span>${esc(w.label)}${w.tag ? ' ' + esc(w.tag) : ''}</span>${p != null ? `<b>${Math.round(p)}%</b>` : ''}</div>`
+			+ (p != null ? bar(p, w.status) : '')
+			+ (w.resets_at_ms ? `<div class="qr">${w.resets_at_ms > Date.now() ? `${esc(w.reset_label || '重置')} ${left(w.resets_at_ms)}后` : '已过重置时间（数据旧了）'}</div>` : '');
+	}
+	const STATE = { ok: ['正常', 'ok'], limited: ['用尽', 'bad'], error: ['异常', 'bad'] };
+	function rows(accounts) {
+		let html = '';
+		const wb = accounts.filter((a) => a.source == 'workbuddy');
+		for (const a of accounts.filter((a) => a.source != 'workbuddy')) {
+			const st = STATE[a.state] ?? ['?', 'bad'];
+			const ws = Object.values(a.windows ?? {}).filter((w) => w && typeof w == 'object');
+			html += `<div class="qa"><div class="qn"><b>${esc(a.name)}</b><span class="${st[1]}">${st[0]}</span></div>`
+				+ (ws.length ? ws.map(line).join('') : `<div class="qr">${esc(a.detail || '没有数据')}</div>`) + '</div>';
+		}
+		if (wb.length) {
+			let remain = 0, size = 0, ok = 0, soon = null;
+			for (const a of wb) {
+				const m = /余\s*(\d+)\s*\/\s*(\d+)/.exec(a.windows?.credits?.label ?? '');
+				if (m) { remain += +m[1]; size += +m[2]; }
+				if (a.state == 'ok') ok++;
+				const t = a.windows?.soonest?.resets_at_ms;
+				if (t && (!soon || t < soon)) soon = t;
+			}
+			const p = size ? (size - remain) * 100 / size : null;
+			html += `<div class="qa"><div class="qn"><b>workbuddy · ${wb.length} 个号</b><span class="${ok == wb.length ? 'ok' : 'bad'}">${ok}/${wb.length} 正常</span></div>`
+				+ `<div class="ql"><span>积分 余 ${remain} / ${size}</span>${p != null ? `<b>${Math.round(p)}%</b>` : ''}</div>`
+				+ (p != null ? bar(p, 'ok') : '') + (soon ? `<div class="qr">最早一批 ${left(soon)}后到期</div>` : '') + '</div>';
+		}
+		return html || '<div class="qr">没有账号</div>';
+	}
+	const QCSS = '.qa{background:rgba(255,255,255,.06);border-radius:10px;padding:8px 10px;margin-bottom:7px}' +
+		'.qn{display:flex;justify-content:space-between;gap:8px;font-size:13px}.qn b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+		'.qn .ok{color:#42d391;font-size:11px;flex-shrink:0}.qn .bad{color:#ff8a8a;font-size:11px;flex-shrink:0}' +
+		'.ql{display:flex;justify-content:space-between;font-size:12px;color:#c6d0dc;margin-top:4px}.ql b{font-weight:600;color:#e8ecf2}' +
+		'.qb{display:block;height:5px;border-radius:3px;background:rgba(255,255,255,.12);margin-top:3px;overflow:hidden}.qb i{display:block;height:100%;border-radius:3px}' +
+		'.qr{font-size:11px;color:#8997a8;margin-top:3px}';
+
+const style = document.createElement('style');
+style.textContent = QCSS;
+document.head.appendChild(style);
+async function load() {
+	let d = null;
+	try { d = await e5.api('/quota'); } catch (e) { document.getElementById('list').innerHTML = `<div class="qr">${esc(e.message || e)}</div>`; }
+	setTimeout(load, !d || d.loading ? 3000 : 60000);
+	if (d) try {
+		document.getElementById('age').textContent = d.age != null ? (d.age < 90 ? '刚刚更新' : `${Math.round(d.age / 60)} 分钟前更新`) : '';
+		document.getElementById('list').innerHTML = d.accounts ? rows(d.accounts) : '<div class="qr">正在从 NAS 读取…</div>';
+	} catch (e) { console.log('aiquota: ' + e); }
+}
+e5.onKey((k) => {
+	if (k.kind == 'up' || k.kind == 'down') { document.getElementById('list').scrollBy({ top: k.kind == 'up' ? -110 : 110 }); return true; }
+	return false;
+});
+load();
+</script>
+</body>
+</html>

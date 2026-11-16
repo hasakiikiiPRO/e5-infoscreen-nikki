@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>助手</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8; --blue:#8fb6ff; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; }
+	.heading { display: flex; justify-content: space-between; align-items: center; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; } .heading span { font-size: 11px; color: var(--dim); }
+	.card { background: var(--card); border-radius: 10px; padding: 9px 11px; flex-shrink: 0; line-height: 1.5; }
+	.tip { font-size: 12px; color: var(--dim); }
+	.tip b { color: var(--text); font-weight: 600; }
+	#list { flex: 1; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 7px; }
+	.q { color: var(--blue); } .t { color: var(--dim); font-size: 11px; }
+</style>
+</head>
+<body>
+<header class="heading"><strong>助手</strong><span id="st"></span></header>
+<div class="card tip">在任何界面<b>按住中间键</b>（约 0.6 秒，震一下）就开始听，<b>说完松开</b>，它会用喇叭回答，屏幕下方显示问答。可以问天气新闻（会联网），也可以问「我今天答应了谁什么」（会查你的录音）。正在说的时候按一下中间键就停。</div>
+<div id="list"></div>
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const p2 = (n) => String(n).padStart(2, '0');
+const when = (t) => { const d = new Date(t * 1000); return `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+async function load() {
+	try {
+		const [h, s] = await Promise.all([e5.api('/history'), e5.api('/state')]);
+		$('st').textContent = s.enabled === false ? '已关闭（设置里打开）' : `长按 ${(s.hold_ms / 1000).toFixed(1)} 秒`;
+		$('list').innerHTML = h.history.length ? h.history.map((x) => `<div class="card"><div class="t">${when(x.at)}</div>`
+			+ `<div class="q">${esc(x.q || '（没听清）')}</div><div>${esc(x.a)}</div></div>`).join('')
+			: '<div class="card tip">还没有问过问题</div>';
+	} catch (e) { $('list').innerHTML = `<div class="card tip">${esc(e.message || e)}</div>`; }
+	setTimeout(load, 5000);
+}
+e5.onKey((k) => {
+	if (k.kind == 'up' || k.kind == 'down') { $('list').scrollBy({ top: k.kind == 'up' ? -100 : 100 }); return true; }
+	return false;
+});
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<script>/* BEGIN e5-assistant (the assistant app, /etc/e5-infoscreen/plugins/assistant) */
+// Hold OK (the middle key) to ask the pocket assistant: held past hold_ms it gets
+// ready, the motor pulses once the microphone is really listening, and it listens
+// while the key stays down; let go and it answers aloud, the question and the
+// answer on a card over whatever is shown.  A tap is given back as it was (a
+// synthetic Enter where it was pressed: the screen and the apps read Enter's key,
+// not the button's own default).  From the lock screen the NAS leaves the
+// recordings out of it: what was said there is no one's to hear without unlocking.
+// Before power-menu.js and mobile.js (their capturing listeners take keys on the
+// lock screen), like the sidekey app's.  Not while the screen is dark, in a call,
+// with the power menu up, or without the app (GET /state 404: nothing at all).
+(function () {
+	const API = '/api/plugins/assistant';
+	const SAFETY_MS = 65000;                     // (listen.py stops at 60 s itself)
+	let cfg = null, cfgAt = -Infinity, gone = false;
+	let held = null, pass = false, card = null, poll = null, hideAt = 0;
+	let run = null, gen = 0, buzzed = false, safety = null;
+	const isOk = (e) => e.key == 'Enter' || e.keyCode == 13;
+	const dark = () => typeof blank !== 'undefined' && blank;
+	const locked = () => document.body.classList.contains('screen-locked');
+	const busyElsewhere = () => {
+		try { return !!window.T551MCalls?.active() || !!window.T551MPower?.isOpen?.(); } catch (_) { return false; }
+	};
+	const post = (p, body) => fetch(API + p, { method: 'POST', cache: 'no-store',
+		headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+	const buzz = (ms) => fetch('/api/vibrate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ms }) }).catch(() => {});
+	function config() {
+		if (gone || performance.now() - cfgAt < 30000) return;
+		cfgAt = performance.now();
+		fetch(API + '/state', { cache: 'no-store' }).then((r) => {
+			if (r.status == 404) { gone = true; return null; }
+			return r.ok ? r.json() : null;
+		}).then((s) => { if (s) cfg = s; }, () => {});
+	}
+	const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+	function show(html) {
+		if (!card) {
+			const css = document.createElement('style');
+			css.textContent = '#e5-assist{position:fixed;left:8px;right:8px;bottom:10px;z-index:2147483646;background:rgba(18,24,34,.97);' +
+				'color:#e8ecf2;border-radius:14px;padding:12px 14px;font:14px/1.55 "Noto Sans CJK SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);' +
+				'max-height:70vh;overflow:hidden;box-sizing:border-box}#e5-assist .q{color:#8fb6ff;margin-bottom:6px}#e5-assist .st{color:#8997a8;font-size:12px;margin-top:6px}' +
+				'#e5-assist .mic{display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff5a5a;margin-right:6px;animation:e5a 1s infinite}' +
+				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}';
+			document.head.appendChild(css);
+			card = document.createElement('div');
+			card.id = 'e5-assist';
+			document.body.appendChild(card);
+		}
+		card.innerHTML = html;
+		card.hidden = false;
+	}
+	function hide() {
+		gen++;                                      // (a poll still on its way is dropped)
+		clearTimeout(poll);
+		poll = null;
+		if (card) card.hidden = true;
+	}
+	const open = () => card && !card.hidden;
+
+	function render(s) {
+		if (s.phase == 'starting') return show('<div>准备中……（震一下就可以说了）</div>');
+		if (s.phase == 'listening') return show('<div><span class="mic"></span>在听……说完松开中间键</div>');
+		if (s.phase == 'thinking') return show('<div>想一下……</div>');
+		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '');
+		if (s.phase == 'speaking') return show(qa + '<div class="st">正在说 · 按中间键停止</div>');
+		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">按中间键关闭</div>`);
+		if (s.phase == 'done') {
+			if (s.cancelled) return hide();
+			show((qa || `<div class="err">${esc(s.error || '没听到问题')}</div>`) + '<div class="st">按中间键关闭</div>');
+		}
+	}
+	function follow() {
+		const g = gen;
+		clearTimeout(poll);
+		fetch(API + '/state', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
+			if (g != gen) return;
+			if (s.run != run) { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
+			if (s.phase == 'listening' && !buzzed) { buzzed = true; buzz(60); }
+			render(s);
+			const done = s.phase == 'done' || s.phase == 'error';
+			if (!done) { hideAt = 0; poll = setTimeout(follow, 350); return; }
+			// (the answer stays a while to be read, then goes by itself)
+			if (!hideAt) hideAt = performance.now() + 15000;
+			if (performance.now() < hideAt) poll = setTimeout(follow, 1000); else hide();
+		}, () => { if (g == gen) poll = setTimeout(follow, 1000); });
+	}
+
+	function begin() {
+		hide();
+		const g = gen;
+		run = null; buzzed = false; hideAt = 0;
+		show('<div>准备中……（震一下就可以说了）</div>');
+		post('/start', { locked: locked() }).then((r) => r.json().then((d) => ({ ok: r.ok, d })))
+			.then(({ ok, d }) => {
+				if (g != gen) return;
+				if (!ok || !d.run) { show(`<div class="err">${esc(d.error || '助手没启动')}</div>`); hideAt = performance.now() + 4000; setTimeout(() => { if (g == gen) hide(); }, 4000); return; }
+				run = d.run;
+				follow();
+			}, () => { if (g == gen) { show('<div class="err">助手没有响应</div>'); setTimeout(() => { if (g == gen) hide(); }, 4000); } });
+		clearTimeout(safety);
+		safety = setTimeout(() => { if (held?.fired) { held = null; finish(); } }, SAFETY_MS);
+	}
+	function finish() {
+		clearTimeout(safety);
+		post('/stop').catch(() => {});
+	}
+	function tapBack(p) {
+		// the key as if never held: Enter where it went down, down then up
+		pass = true;
+		try {
+			for (const type of ['keydown', 'keyup'])
+				p.target.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+		} finally { pass = false; }
+	}
+	function key(e) {
+		if (pass || gone || !isOk(e)) return;
+		config();
+		if (e.type == 'keydown') {
+			if (held && e.repeat) {                 // held down: its repeats are ours
+				e.preventDefault(); e.stopImmediatePropagation();
+				return;
+			}
+			if (held) {                             // a new press: the last keyup was lost
+				const p = held;
+				held = null;
+				clearTimeout(p.timer);
+				if (p.fired) finish();
+			}
+			if (e.repeat || dark() || busyElsewhere() || !cfg || cfg.enabled === false) return;
+			e.preventDefault(); e.stopImmediatePropagation();
+			const press = held = { fired: false, target: e.target, wasOpen: open() };
+			press.timer = setTimeout(() => {
+				if (held !== press) return;
+				press.fired = true;
+				begin();
+			}, cfg.hold_ms || 600);
+			return;
+		}
+		if (!held) return;                          // keyup of a press we did not take
+		e.preventDefault(); e.stopImmediatePropagation();
+		const p = held;
+		held = null;
+		clearTimeout(p.timer);
+		if (p.fired) return finish();
+		// a tap with the card up: it closes the card (and stops the voice), not the key's usual
+		if (p.wasOpen) { post('/cancel').catch(() => {}); hide(); return; }
+		tapBack(p);
+	}
+	function attach(win) {
+		const doc = win?.document;
+		if (!doc || doc.__e5Assist) return;
+		doc.__e5Assist = true;
+		win.addEventListener('keydown', key, true);
+		win.addEventListener('keyup', key, true);
+	}
+	attach(window);
+	// the apps' frames: the screen hands each to T551MPower.attach (power-menu.js)
+	window.addEventListener('DOMContentLoaded', () => {
+		const P = window.T551MPower;
+		if (P?.attach) { const a = P.attach; P.attach = (win) => { a(win); attach(win); }; }
+	});
+	// focus gone elsewhere mid-press: a hold already asking stops there, a tap is dropped
+	window.addEventListener('blur', () => {
+		if (!held) return;
+		const p = held;
+		held = null;
+		clearTimeout(p.timer);
+		if (p.fired) finish();
+	});
+	config();
+})();
+/* END e5-assistant */</script>

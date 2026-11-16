@@ -296,12 +296,17 @@ def wav_bytes(samples):
 
 def deepseek_asr(samples, tries=3):
     """One sentence (<= 20 s: the VAD's cap, the API takes 120 s) -> its text."""
+    return asr_wav(wav_bytes(samples), tries)
+
+
+def asr_wav(wav, tries=3):
+    """A whole WAV (16-bit PCM, <= 120 s, <= 8 MiB) -> its text, by DeepSeek."""
     import urllib.error
     import urllib.request
     import uuid
     boundary = uuid.uuid4().hex
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="s.wav"\r\n'
-            'Content-Type: audio/wav\r\n\r\n').encode() + wav_bytes(samples) + f'\r\n--{boundary}--\r\n'.encode()
+            'Content-Type: audio/wav\r\n\r\n').encode() + wav + f'\r\n--{boundary}--\r\n'.encode()
     req = urllib.request.Request(DEEPSEEK_ASR, data=body, method='POST', headers={
         'Authorization': 'Bearer ' + DEEPSEEK_KEY, 'Content-Type': f'multipart/form-data; boundary={boundary}'})
     # (a domestic API: never through a proxy)

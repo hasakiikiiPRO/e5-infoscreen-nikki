@@ -42,6 +42,10 @@ RUNNING = '/var/run/e5-recorder.running'
 WAKE = 'e5-recorder'
 MIN_FREE_MB = 300
 GONE_LOOPS = 30                         # (~30 s gone: removed, not a reinstall)
+# the pocket assistant (the 助手 app) wants the microphone: yield as to a call, resume after;
+# a flag older than this is left over from a crash and ignored
+ASSIST_WANT = '/tmp/run/e5-assistant.want'
+ASSIST_MAX_S = 90
 
 
 def log(msg):
@@ -178,6 +182,13 @@ class Segment:
         os.replace(self.part, f'{OUT}/{self.name}.mp3')
         log(f'{self.name}.mp3: {secs:.0f} s ({why})')
         return self.name
+
+
+def assistant_wants():
+    try:
+        return time.time() - os.path.getmtime(ASSIST_WANT) < ASSIST_MAX_S
+    except OSError:
+        return False
 
 
 def size(path):
@@ -364,23 +375,24 @@ def main():
         want = setting('enabled', '0') == '1'
         seg_s = max(60, int(setting('segment_min', '30')) * 60)
         call = routing.pending_voice()
+        assist = assistant_wants()
         fm = free_mb()
         if seg:
-            why = ('stopped' if not want else 'call' if call else 'service stopped' if stopping
+            why = ('stopped' if not want else 'call' if call else 'assistant' if assist else 'service stopped' if stopping
                    else 'storage low' if fm < MIN_FREE_MB else 'segment' if seg.seconds() >= seg_s else None)
             if why:
                 seg.close(why)
                 seg = None
                 if why == 'storage low':
                     err = f'存储不足（剩 {fm} MB），已停止录音'
-                if why == 'call':
+                if why in ('call', 'assistant'):
                     blocked_until = time.monotonic() + 3
         if stopping:
             wake(False)
             sys.exit(0)
         if want and not seg and fm < MIN_FREE_MB:
             err = f'存储不足（剩 {fm} MB），等电脑同步后再录'
-        if not seg and want and not call and time.monotonic() >= blocked_until and fm >= MIN_FREE_MB:
+        if not seg and want and not call and not assist and time.monotonic() >= blocked_until and fm >= MIN_FREE_MB:
             try:
                 seg = Segment()
                 err = None
@@ -409,7 +421,7 @@ def main():
                 while time.monotonic() < end:
                     seg.pump(0.25)
                     # (a call waits 5 s for the lease: look every 0.25 s)
-                    if routing.pending_voice():
+                    if routing.pending_voice() or assistant_wants():
                         break
             except Exception as e:
                 err = f'录音中断：{e}'

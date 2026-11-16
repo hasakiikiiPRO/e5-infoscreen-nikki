@@ -1,0 +1,83 @@
+{
+	"id": "assistant",
+	"api_version": 2,
+	"version": "1.1",
+	"name": {
+		"zh": "助手",
+		"en": "Assistant"
+	},
+	"description": {
+		"zh": "长按中间键问口袋语音助手：联网、知道你录音里说过的话，用喇叭回答",
+		"en": "Hold the middle key to ask; it answers aloud"
+	},
+	"entry": "index.html",
+	"order": 24,
+	"settings": [
+		{
+			"id": "enabled",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.enabled",
+			"default": "1",
+			"label": {
+				"zh": "长按中间键召唤",
+				"en": "Hold OK to ask"
+			},
+			"options": [
+				{
+					"value": "1",
+					"label": {
+						"zh": "开",
+						"en": "On"
+					}
+				},
+				{
+					"value": "0",
+					"label": {
+						"zh": "关",
+						"en": "Off"
+					}
+				}
+			]
+		},
+		{
+			"id": "hold_ms",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.hold_ms",
+			"default": "600",
+			"label": {
+				"zh": "按住多久算长按",
+				"en": "Hold for"
+			},
+			"options": [
+				{
+					"value": "400",
+					"label": {
+						"zh": "0.4 秒",
+						"en": "0.4 s"
+					}
+				},
+				{
+					"value": "600",
+					"label": {
+						"zh": "0.6 秒",
+						"en": "0.6 s"
+					}
+				},
+				{
+					"value": "800",
+					"label": {
+						"zh": "0.8 秒",
+						"en": "0.8 s"
+					}
+				},
+				{
+					"value": "1000",
+					"label": {
+						"zh": "1 秒",
+						"en": "1 s"
+					}
+				}
+			]
+		}
+	]
+}

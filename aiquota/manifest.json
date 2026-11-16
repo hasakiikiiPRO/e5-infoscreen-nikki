@@ -1,0 +1,15 @@
+{
+	"id": "aiquota",
+	"api_version": 2,
+	"version": "1.1",
+	"name": {
+		"zh": "配额",
+		"en": "AI quota"
+	},
+	"description": {
+		"zh": "AI 账号配额（NAS 配额面板）；锁屏按 → 也能看",
+		"en": "AI account quotas; right on the lock screen"
+	},
+	"entry": "index.html",
+	"order": 25
+}

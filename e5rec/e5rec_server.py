@@ -22,6 +22,10 @@ Reading (the token -- the E5's screen app -- or the web page's session cookie):
   GET /v1/audio/<name>                 the MP3 (the web page's player; Range works)
   GET /                                the web page (web.html); POST /v1/login {"password"} sets the cookie
 
+The pocket assistant (the E5's held OK key):
+  POST /v1/assistant                   a WAV of the question (<= 8 MiB, <= 120 s) -> {question, answer,
+                                       audio: the answer spoken, a 24 kHz WAV, base64}
+
 Config (/vol2/1000/e5rec/server.json, mode 600):
   {"token": "...", "web_password": "...", "port": 18420, "cert": "tls/cert.pem", "key": "tls/key.pem"}
 Recordings: E5REC_ROOT/YYYY-MM-DD/rec-*.mp3 / .json / .txt / .transcript.json / .summary.json, index.db
@@ -41,6 +45,7 @@ import time
 import urllib.parse
 from pathlib import Path
 
+import e5assist
 import e5rec
 import e5sum
 
@@ -326,6 +331,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 left -= len(chunk)
 
     def do_POST(self):
+        if self.path == '/v1/assistant':
+            return self.assistant()
         if self.path == '/v1/logout':
             session_end(self.cookie())
             return self.reply(200, {'ok': True}, [('Set-Cookie', 'e5s=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict')])
@@ -359,6 +366,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             login_fails.update(n=0, until=0.0)
         self.reply(200, {'ok': True},
                    [('Set-Cookie', f'e5s={session_new()}; Max-Age={SESSION_DAYS * 86400}; Path=/; Secure; HttpOnly; SameSite=Strict')])
+
+    def assistant(self):
+        if not self.authed():
+            time.sleep(0.5)
+            return self.reply(401, {'ok': False, 'error': 'unauthorized'})
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            n = -1
+        if not 44 < n <= 8 << 20:
+            return self.reply(413, {'ok': False, 'error': 'bad length'})
+        wav = self.rfile.read(n)
+        if len(wav) != n or wav[:4] != b'RIFF' or wav[8:12] != b'WAVE':
+            return self.reply(400, {'ok': False, 'error': 'not a WAV'})
+        try:
+            r = e5assist.ask(wav, locked=self.headers.get('X-Locked') == '1')
+        except Exception as e:
+            log(f'assistant: {e}')
+            return self.reply(502, {'ok': False, 'error': '助手出错了'})
+        self.reply(200, {'ok': True, 'question': r['question'], 'answer': r['answer'], 'timing': r['timing'],
+                         'audio': base64.b64encode(r['wav']).decode()})
 
     def do_PUT(self):
         auth = self.headers.get('Authorization', '')
