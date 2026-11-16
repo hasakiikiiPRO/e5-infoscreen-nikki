@@ -1,20 +1,60 @@
 {
 	"id": "recorder",
 	"api_version": 2,
-	"version": "1.2",
-	"name": { "zh": "录音", "en": "Recorder" },
-	"description": { "zh": "用机身麦克风录音（分段 MP3），电脑自动同步并转文字", "en": "Records the built-in microphone in MP3 segments for the computer to transcribe" },
+	"version": "1.3",
+	"name": {
+		"zh": "录音",
+		"en": "Recorder"
+	},
+	"description": {
+		"zh": "用机身麦克风录音（分段 MP3），电脑自动同步并转文字",
+		"en": "Records the built-in microphone in MP3 segments for the computer to transcribe"
+	},
 	"entry": "index.html",
 	"order": 23,
 	"settings": [
 		{
-			"id": "segment_min", "type": "choice", "uci": "e5-plugin-recorder.settings.segment_min", "default": "30",
-			"label": { "zh": "每段时长", "en": "Segment length" },
-			"note": { "zh": "录音按这个时长切成一段段文件，电脑可以边录边同步", "en": "Recordings are cut into files of this length" },
+			"id": "segment_min",
+			"type": "choice",
+			"uci": "e5-plugin-recorder.settings.segment_min",
+			"default": "30",
+			"label": {
+				"zh": "每段时长",
+				"en": "Segment length"
+			},
+			"note": {
+				"zh": "录音按这个时长切成一段段文件；每段录完就上传（设了 NAS 时），越短文字出来越快",
+				"en": "Recordings are cut into files of this length; each is uploaded when it closes"
+			},
 			"options": [
-				{ "value": "10", "label": { "zh": "10 分钟", "en": "10 min" } },
-				{ "value": "30", "label": { "zh": "30 分钟", "en": "30 min" } },
-				{ "value": "60", "label": { "zh": "60 分钟", "en": "60 min" } }
+				{
+					"value": "5",
+					"label": {
+						"zh": "5 分钟",
+						"en": "5 min"
+					}
+				},
+				{
+					"value": "10",
+					"label": {
+						"zh": "10 分钟",
+						"en": "10 min"
+					}
+				},
+				{
+					"value": "30",
+					"label": {
+						"zh": "30 分钟",
+						"en": "30 min"
+					}
+				},
+				{
+					"value": "60",
+					"label": {
+						"zh": "60 分钟",
+						"en": "60 min"
+					}
+				}
 			]
 		}
 	]

@@ -164,15 +164,29 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 - **来电**：通话会申请同一个硬件租约（最多等 5 秒），录音每 0.25 秒检查一次，立刻收尾这一段，挂断后自动接着录。开始录音失败时一定释放租约，不会挡住来电。
 - 录音时持有唤醒锁，设备不深度休眠；服务被杀时 init 脚本的 `service_stopped` 也会释放。剩余空间低于 300 MB 自动停录。
 
-### 电脑上（`e5rec/`）
+### E5 上传到 NAS（推荐，1.3 起）
+
+- 每段录完（分段可设 5 / 10 / 30 / 60 分钟）就由录音服务自己上传，**流量、WiFi 都行**，不用等回家或电脑开机。
+- 上传：HTTPS PUT 到 NAS 的 `e5rec_server.py`（经公网 frp 隧道），只信任 NAS 自己的证书（`/etc/e5rec/nas.pem`，钉死），带口令；NAS 落盘（fsync）并核对 SHA-256 一致后才回 OK，**E5 收到 OK 才删本地文件**。重复上传幂等；失败按 15 秒起翻倍退避（最长 5 分钟）。上传时持有唤醒锁。
+- E5 设置：`uci set e5-plugin-recorder.settings.upload_url=https://<公网地址>:<端口>`、`upload_token=<口令>`，证书放 `/etc/e5rec/nas.pem`。不设则不上传（仍可用电脑拉取）。
+- 国内地址走 Nikki 的 `GEOIP,CN,DIRECT`，实测直连、不绕国外。
+
+### NAS 上（`e5rec/e5rec_server.py`）
+
+- 收到即转写：本地 silero VAD 切句（保留每句时间）→ 每句送 **DeepSeek 语音识别**（`api.deepseek.com/v1/tools/asr`，2026-11 官方新增；¥0.39/小时音频，按秒计）→ 某句失败时用本地 SenseVoice 兜底。VAD 切得很紧，**每句前补 0.8 秒、后补 0.4 秒**（不越过相邻句）再送，实测全对；不补会丢掉句首的字。
+- 为什么不全在 NAS 本地识别：J3160（无 AVX）跑 SenseVoice 比实时慢 2.4 倍，跟不上连续录音；本地只跑 VAD 很轻。
+- 部署：`e5rec/nas/e5rec-server.service`（systemd 用户服务，`E5REC_ROOT` 指录音目录）；`server.json` 放口令、证书路径；`~/.config/e5rec/config.json` 设 `"asr": "deepseek"` 和 `deepseek_api_key`（见 `config.example.json`）。
+- MCP 直接跑在 NAS 上：`ssh nas 'cd … && E5REC_ROOT=… E5REC_NAS=1 exec .venv/bin/python -u mcp_server.py'`，数据只有 NAS 一份。
+
+### 电脑上（`e5rec/`，可选的旧方式）
 
 - `e5rec.py run`：找到 E5（先试 USB 192.168.9.1，再试上次的地址、邻居表里的 MAC，最后扫描局域网），用专用 SSH 密钥登录，**E5 的主机密钥首次连接后固定**（`~/.config/e5rec/known_hosts`）。
 - 逐个文件：在 E5 上算 SHA-256 → 流式拉取边收边算 → 一致且已写入磁盘（fsync）后才删除 E5 上的文件。同名但内容不同的文件另存，不覆盖。
-- 转文字：ffmpeg 解码 → silero VAD 切句 → SenseVoice（sherpa-onnx，离线，中英日韩粤），输出带时钟时间的 `.txt`、`.transcript.json`，并写入 SQLite 索引 `index.db`。连续失败 3 次的文件不再重试。
-- systemd 用户定时器每 5 分钟跑一次（`e5rec/systemd/`）。
+- 转文字同上（`asr` 不设时只用本地 SenseVoice），输出带时钟时间的 `.txt`、`.transcript.json`，并写入 SQLite 索引 `index.db`。连续失败 3 次的文件不再重试。
+- systemd 用户定时器每 5 分钟跑一次（`e5rec/systemd/`）。用了 NAS 上传就停掉它，免得两边抢文件。
 - `mcp_server.py`：stdio MCP，工具 `e5rec_status` / `e5rec_record` / `e5rec_sync_now` / `e5rec_list` / `e5rec_search` / `e5rec_transcript`。开始录音前要求 AI 先得到用户明确同意。
 
-配置见 `e5rec/config.example.json`（复制到 `~/.config/e5rec/config.json`）：E5 的 MAC（热点和连家里 WiFi 时各一个），以及 SenseVoice 模型和 silero_vad.onnx 的路径。E5 上需把 `~/.ssh/e5_rec.pub` 加进 `/etc/dropbear/authorized_keys`。
+配置见 `e5rec/config.example.json`（复制到 `~/.config/e5rec/config.json`）：E5 的 MAC（热点和连家里 WiFi 时各一个），SenseVoice 模型和 silero_vad.onnx 的路径，以及转写方式。电脑拉取方式下，E5 上需把 `~/.ssh/e5_rec.pub` 加进 `/etc/dropbear/authorized_keys`。
 
 **隐私**：录别人说话前请先征得同意。
 

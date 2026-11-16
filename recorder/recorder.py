@@ -5,7 +5,10 @@ While e5-plugin-recorder.settings.enabled is 1 it records the built-in
 microphone into MP3 segments (48 kHz mono, ~33 kbps, ~15 MB an hour) under
 /mnt/e5-data/e5rec: rec-YYYYMMDD-HHMMSS.mp3, each with a .json beside it
 (start, end, seconds, why it ended).  A segment being written is *.mp3.part;
-only finished pairs are for the computer to take (e5rec-sync).
+only finished pairs are for the computer to take (e5rec-sync) -- or, with
+upload_url / upload_token set, uploaded by this service itself the moment
+they close (over whatever network the E5 has, mobile data too) to the NAS's
+e5rec_server.py, and deleted here once it answers with the same SHA-256.
 
 The microphone is the system's one capture path (/opt/e5/e5-capture.py's
 Capture, the hardware lease of e5_audio_routing): a call asks for the lease
@@ -13,9 +16,15 @@ Capture, the hardware lease of e5_audio_routing): a call asks for the lease
 once and recording resumes after the call.  A wake lock is held while it
 records: deep sleep would stop the microphone.
 """
+import base64
 import ctypes
+import hashlib
+import http.client
 import importlib.util
 import json
+import ssl
+import threading
+import urllib.parse
 import os
 import select
 import signal
@@ -60,10 +69,10 @@ def free_mb():
         return 0
 
 
-def wake(on):
+def wake(on, name=WAKE):
     try:
         with open('/sys/power/wake_lock' if on else '/sys/power/wake_unlock', 'w') as f:
-            f.write(WAKE)
+            f.write(name)
     except OSError:
         pass
 
@@ -231,6 +240,85 @@ def removed(seg):
     sys.exit(0)
 
 
+# ---------- uploads to the NAS ----------
+# e5-plugin-recorder.settings.upload_url  https://<host>:<port>
+#                        .upload_token    the NAS's server.json token
+# /etc/e5rec/nas.pem: the NAS's own certificate, the only one trusted (pinned)
+NAS_CERT = '/etc/e5rec/nas.pem'
+UP_WAKE = 'e5-recorder-upload'
+up_state = {'at': None, 'error': None, 'files': 0}
+
+
+def file_sha(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for chunk in iter(lambda: f.read(1 << 16), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def upload_one(url, token, name):
+    """PUT one finished recording; True once the NAS has it on disk with this SHA-256."""
+    mp3, meta = f'{OUT}/{name}.mp3', f'{OUT}/{name}.json'
+    want = file_sha(mp3)
+    with open(meta, 'rb') as f:
+        meta_b64 = base64.b64encode(f.read()).decode()
+    u = urllib.parse.urlsplit(url)
+    ctx = ssl.create_default_context(cafile=NAS_CERT)
+    conn = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=60)
+    try:
+        conn.putrequest('PUT', f'/v1/rec/{name}')
+        conn.putheader('Authorization', 'Bearer ' + token)
+        conn.putheader('X-Sha256', want)
+        conn.putheader('X-Meta', meta_b64)
+        conn.putheader('Content-Length', str(os.path.getsize(mp3)))
+        conn.endheaders()
+        with open(mp3, 'rb') as f:
+            for chunk in iter(lambda: f.read(1 << 16), b''):
+                conn.send(chunk)
+        r = conn.getresponse()
+        body = json.loads(r.read() or b'{}')
+    finally:
+        conn.close()
+    if r.status != 200 or not body.get('ok') or body.get('sha256') != want:
+        raise RuntimeError(f'NAS: HTTP {r.status} {body.get("error") or ""}'.strip())
+    return True
+
+
+def uploader():
+    """Every finished recording to the NAS, oldest first; on failure wait longer, up to 5 min."""
+    wait = 15
+    while True:
+        url, token = setting('upload_url', ''), setting('upload_token', '')
+        if not url or not token or not os.path.exists(NAS_CERT):
+            time.sleep(30)
+            continue
+        names = [n for n in finished() if os.path.exists(f'{OUT}/{n}.json')]
+        sent, err = 0, None
+        if names:
+            wake(True, UP_WAKE)
+            try:
+                for n in names:
+                    upload_one(url, token, n)
+                    for ext in ('mp3', 'json'):
+                        try:
+                            os.unlink(f'{OUT}/{n}.{ext}')
+                        except FileNotFoundError:
+                            pass
+                    sent += 1
+            except Exception as e:
+                err = str(e) or type(e).__name__
+            finally:
+                wake(False, UP_WAKE)
+        if sent:
+            write_json(OUT + '/.last_sync', {'at': round(time.time()), 'files': sent, 'host': 'NAS'})
+        if err != up_state['error']:
+            log(f'upload: {err}' if err else 'upload: working again')
+        up_state.update(at=round(time.time()), error=err, files=sent)
+        wait = 15 if not err else min(wait * 2, 300)
+        time.sleep(wait)
+
+
 def main():
     os.makedirs(RUN, exist_ok=True)
     # (a segment cut short by a crash or a power loss: what was written is kept, as it is)
@@ -253,6 +341,7 @@ def main():
         stopping = True
     signal.signal(signal.SIGTERM, term)
     log('started')
+    threading.Thread(target=uploader, daemon=True).start()
     while True:
         gone = 0 if os.path.exists(f'{APP}/manifest.json') else gone + 1
         if gone >= GONE_LOOPS:
@@ -295,7 +384,8 @@ def main():
                 'current': seg.name if seg else None, 'current_s': round(seg.seconds()) if seg else 0,
                 'since': round(seg.start) if seg else None, 'error': err, 'free_mb': fm,
                 'pending': len(files), 'pending_mb': round(sum(size(f'{OUT}/{n}.mp3') for n in files) / 1048576, 1),
-                'last_sync': last_sync(), 'at': round(time.time())})
+                'last_sync': last_sync(), 'upload_error': up_state['error'],
+                'uploading': bool(setting('upload_url', '')), 'at': round(time.time())})
         except Exception as e:
             log(f'state: {e}')
         if seg:

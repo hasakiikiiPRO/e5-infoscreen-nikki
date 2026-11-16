@@ -1,0 +1,14 @@
+[Unit]
+Description=E5 recorder: receives the E5 uploads, transcribes them (e5rec_server.py)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/vol2/1000/e5rec
+Environment=E5REC_ROOT=/vol2/1000/e5rec/data
+ExecStart=/vol2/1000/e5rec/.venv/bin/python -u /vol2/1000/e5rec/e5rec_server.py
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target

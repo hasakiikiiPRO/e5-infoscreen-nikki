@@ -44,11 +44,11 @@
 	<div class="label" id="label">按确定开始录音</div>
 </button>
 <section class="card">
-	<div class="row"><span>待同步到电脑</span><b id="pending">—</b></div>
-	<div class="row"><span>上次同步</span><b id="sync">—</b></div>
+	<div class="row"><span>待上传</span><b id="pending">—</b></div>
+	<div class="row"><span>上次上传</span><b id="sync">—</b></div>
 </section>
 <section class="card files" id="files"></section>
-<div class="note">录音保存在本机，电脑连上后（USB 或同一个 WiFi）自动拉走、转成文字并删除本机文件。录音时锁屏左上角会显示红点，设备不会休眠。</div>
+<div class="note">每段录完就自动上传到 NAS（流量或 WiFi 都行），NAS 确认收到后删除本机文件并转成文字；没网时先存在本机，有网再补传。录音时锁屏左上角会显示红点，设备不会休眠。</div>
 
 <script src="/sdk/e5.js"></script>
 <script>
@@ -71,7 +71,7 @@ function render() {
 	$('err').textContent = s.service === false ? '后台服务没有运行' : (s.error ?? '');
 	$('err').hidden = !$('err').textContent;
 	$('pending').textContent = s.pending != null ? `${s.pending} 个文件 · ${s.pending_mb} MB` : '—';
-	$('sync').textContent = s.last_sync_at ? `${s.last_sync_at}（${s.last_sync_files ?? 0} 个）` : '还没有同步过';
+	$('sync').textContent = s.upload_error ? `上传失败：${s.upload_error}` : s.last_sync_at ? `${s.last_sync_at}（${s.last_sync_files ?? 0} 个）` : '还没有同步过';
 	const fl = s.files ?? [];
 	$('files').innerHTML = fl.length
 		? fl.slice(0, 6).map((f) => `<div class="row"><span>${esc(f.start ?? f.name)}</span><b>${f.seconds != null ? mmss(f.seconds) : '—'} · ${f.mb.toFixed(1)} MB</b></div>`).join('')

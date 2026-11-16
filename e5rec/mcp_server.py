@@ -1,10 +1,11 @@
-#!/usr/bin/env python3
+#!/home/hasakiikii/cc/e5-recorder/.venv/bin/python
 """E5 recorder MCP server (stdio JSON-RPC 2.0).
 
 Tools over the recordings the E5 makes and e5rec.py transcribes:
 status, start/stop recording, sync now, list, search, read a transcript.
 """
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -15,6 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import e5rec  # noqa: E402
 
 DATE = {'type': 'string', 'description': '日期 YYYY-MM-DD（本地时间，含当天）'}
+# On the NAS (E5REC_NAS=1): the E5 uploads by itself the moment each segment closes, so
+# "sync now" only transcribes what is waiting, and the status says when the last one came
+NAS = os.environ.get('E5REC_NAS') == '1'
 TOOLS = [
     {'name': 'e5rec_status',
      'description': '荣悦 E5 录音状态：E5 是否在线、是否正在录音、当前这段录了多久、E5 上待同步的文件、电脑上已有的录音数和最近同步时间。',
@@ -71,8 +75,16 @@ def t_status(a):
     st = e5rec.load_state()
     out = {'computer': {'recordings': n, 'hours': round(secs / 3600, 2), 'folder': str(e5rec.ROOT),
                         'last_seen_e5': fmt(st['last_seen']) if st.get('last_seen') else None}}
+    if NAS:
+        lu = st.get('last_upload') or {}
+        out['computer']['where'] = 'NAS（E5 每段录完经流量/WiFi 直接上传）'
+        out['computer']['last_upload'] = {'at': fmt(lu['at']), 'recording': lu.get('name')} if lu.get('at') else None
+        waiting = [p.stem for p in e5rec.ROOT.glob('*/rec-*.mp3')
+                   if not c.execute('select 1 from recordings where name=? and transcribed_at is not null', (p.stem,)).fetchone()]
+        out['computer']['not_transcribed_yet'] = waiting
     if s is None:
-        out['e5'] = {'online': False, 'note': 'USB 和家里 WiFi 都没找到 E5；它在外面时录音照常进行，回来后自动同步'}
+        out['e5'] = {'online': False, 'note': ('NAS 连不上 E5 本身（它不在家里 WiFi 时就是这样）；录音照常，每段录完自动上传，看 last_upload'
+                                               if NAS else 'USB 和家里 WiFi 都没找到 E5；它在外面时录音照常进行，回来后自动同步')}
     else:
         out['e5'] = {'online': True, 'ip': s.get('ip'), 'recording': s.get('recording'), 'enabled': s.get('enabled'),
                      'current_seconds': s.get('current_s'), 'in_call': s.get('call'), 'error': s.get('error'),
@@ -86,6 +98,9 @@ def t_record(a):
 
 
 def t_sync(a):
+    if NAS:
+        n = e5rec.transcribe()
+        return {'transcribed_now': n, 'note': 'E5 每段录完会自己上传到 NAS；这里只是立刻把还没转的转成文字'}
     got = e5rec.sync()
     # (transcription can take minutes: in the background, not holding the protocol)
     subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent / 'e5rec.py'), 'transcribe'],

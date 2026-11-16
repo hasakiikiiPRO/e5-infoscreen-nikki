@@ -19,5 +19,6 @@ start_service() {
 # (the wake lock is not the process's: a kill would leave the device awake for good)
 service_stopped() {
 	echo e5-recorder > /sys/power/wake_unlock 2>/dev/null
+	echo e5-recorder-upload > /sys/power/wake_unlock 2>/dev/null
 	return 0
 }

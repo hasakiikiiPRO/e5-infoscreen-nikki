@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/hasakiikii/cc/e5-recorder/.venv/bin/python
 """e5rec -- the computer half of the E5 recorder.
 
   e5rec sync         find the E5 (USB 192.168.9.1, or its MAC on the home WiFi),
@@ -43,6 +43,11 @@ except (OSError, ValueError):
 E5_MACS = {m.lower() for m in _cfg.get('macs', [])}
 SENSEVOICE = Path(_cfg.get('sensevoice') or Path.home() / 'models' / 'sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17')
 VAD = Path(_cfg.get('vad') or Path.home() / 'models' / 'silero_vad.onnx')
+# "deepseek": each VAD sentence to DeepSeek's ASR (api.deepseek.com/v1/tools/asr), the local
+# SenseVoice only where that fails; anything else: SenseVoice only
+ASR = _cfg.get('asr', 'sensevoice')
+DEEPSEEK_KEY = os.environ.get('DEEPSEEK_API_KEY') or _cfg.get('deepseek_api_key', '')
+DEEPSEEK_ASR = 'https://api.deepseek.com/v1/tools/asr'
 NAME = re.compile(r'^rec-(\d{8})-(\d{6})(-\d+)?$')
 KNOWN_HOSTS = Path.home() / '.config' / 'e5rec' / 'known_hosts'
 
@@ -262,7 +267,59 @@ def decode(path):
     return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 
+def wav_bytes(samples):
+    import io
+    import wave
+    import numpy as np
+    b = io.BytesIO()
+    with wave.open(b, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes((np.clip(samples, -1, 1) * 32767).astype('<i2').tobytes())
+    return b.getvalue()
+
+
+def deepseek_asr(samples, tries=3):
+    """One sentence (<= 20 s: the VAD's cap, the API takes 120 s) -> its text."""
+    import urllib.error
+    import urllib.request
+    import uuid
+    boundary = uuid.uuid4().hex
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="s.wav"\r\n'
+            'Content-Type: audio/wav\r\n\r\n').encode() + wav_bytes(samples) + f'\r\n--{boundary}--\r\n'.encode()
+    req = urllib.request.Request(DEEPSEEK_ASR, data=body, method='POST', headers={
+        'Authorization': 'Bearer ' + DEEPSEEK_KEY, 'Content-Type': f'multipart/form-data; boundary={boundary}'})
+    # (a domestic API: never through a proxy)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    for i in range(tries):
+        try:
+            with opener.open(req, timeout=60) as r:
+                return json.loads(r.read())['text'].strip()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 503, 504) or i == tries - 1:
+                raise
+        except (urllib.error.URLError, TimeoutError):
+            if i == tries - 1:
+                raise
+        time.sleep(2 * (i + 1))
+
+
+_local_lock = __import__('threading').Lock()
+
+
+def local_asr(samples):
+    # (one model, loaded once, used one at a time: the fallback is rare)
+    with _local_lock:
+        rec = recognizer()
+        st = rec.create_stream()
+        st.accept_waveform(16000, samples)
+        rec.decode_stream(st)
+        return st.result.text.strip()
+
+
 def transcribe_file(mp3):
+    """-> (segments [{start, end, text, engine}], seconds of audio)."""
     import sherpa_onnx
     samples = decode(mp3)
     cfg = sherpa_onnx.VadModelConfig()
@@ -272,19 +329,11 @@ def transcribe_file(mp3):
     cfg.silero_vad.max_speech_duration = 20
     cfg.sample_rate = 16000
     vad = sherpa_onnx.VoiceActivityDetector(cfg, buffer_size_in_seconds=60)
-    rec = recognizer()
-    segs = []
+    speech = []
 
     def drain():
         while not vad.empty():
-            s = vad.front
-            st = rec.create_stream()
-            st.accept_waveform(16000, s.samples)
-            rec.decode_stream(st)
-            text = st.result.text.strip()
-            if text:
-                segs.append({'start': round(s.start / 16000, 2), 'end': round((s.start + len(s.samples)) / 16000, 2),
-                             'text': text, 'lang': getattr(st.result, 'lang', '')})
+            speech.append((vad.front.start, vad.front.samples))
             vad.pop()
     win = cfg.silero_vad.window_size
     for i in range(0, len(samples), win):
@@ -292,6 +341,32 @@ def transcribe_file(mp3):
         drain()
     vad.flush()
     drain()
+
+    # DeepSeek wants the sound around a sentence: the VAD cuts tight and it then loses the
+    # first word (measured: 0.8 s before / 0.4 s after got all of a test exactly right) --
+    # but never into the next or last sentence, whose words it would pick up
+    PRE, POST = int(0.8 * 16000), int(0.4 * 16000)
+    padded = []
+    for i, (start, s) in enumerate(speech):
+        lo = max(0, start - PRE, speech[i - 1][0] + len(speech[i - 1][1]) if i else 0)
+        hi = min(len(samples), start + len(s) + POST, speech[i + 1][0] if i + 1 < len(speech) else len(samples))
+        padded.append(samples[lo:hi])
+
+    def one(i):
+        start, s = speech[i]
+        text, engine = None, 'sensevoice'
+        if ASR == 'deepseek' and DEEPSEEK_KEY:
+            try:
+                text, engine = deepseek_asr(padded[i]), 'deepseek'
+            except Exception as e:
+                log(f'transcribe: {mp3.name} @{start / 16000:.1f}s: DeepSeek failed ({e}), local SenseVoice')
+        if text is None:
+            text = local_asr(s)
+        return {'start': round(start / 16000, 2), 'end': round((start + len(s)) / 16000, 2),
+                'text': text, 'engine': engine}
+    # (DeepSeek allows 50 at once; the local fallback is one model, so few)
+    with ThreadPoolExecutor(8 if ASR == 'deepseek' else 1) as pool:
+        segs = [x for x in pool.map(one, range(len(speech))) if x['text']]
     return segs, len(samples) / 16000
 
 
