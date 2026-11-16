@@ -226,7 +226,7 @@ def ask(wav):
     try:
         conn.request('POST', '/v1/assistant', body=wav, headers={
             'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0',
-            'X-Boost': setting('boost', '8')})
+            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'smart')})
         r = conn.getresponse()
         body = json.loads(r.read() or b'{}')
     finally:

@@ -6,9 +6,13 @@ summaries and the last two hours of what was said as background), and that
 answer spoken (DeepSeek TTS, 24 kHz mono WAV).  A short memory of the last
 turns lets a follow-up ("那明天呢？") make sense.
 """
+import io
 import json
+import re
 import subprocess
 import threading
+import wave
+from concurrent.futures import ThreadPoolExecutor
 import time
 import urllib.error
 import urllib.request
@@ -22,11 +26,15 @@ VOICE = 'stella'                       # (DeepSeek's two: stella, a woman's voic
 PLACE = '浙江温州'
 MEMORY_S = 10 * 60                     # follow-ups within this long see the earlier turns
 MEMORY_TURNS = 6
+# how hard it thinks (the E5's 思考程度): (model, thinking) -- measured on a planning question:
+# fast 1.5 s and shallow; smart 4 s and well reasoned; best (v4-pro) 12 s, no better than smart
+MODES = {'fast': ('deepseek-flash', False), 'smart': ('deepseek-flash', True), 'best': ('deepseek-v4-pro', True)}
 RECENT_S = 2 * 3600
 MAX_CONTEXT = 24000
 
 SYSTEM = ('你是用户随身带的口袋语音助手（装在一台叫 E5 的小设备上）。你的回答会被直接朗读出来：'
-          '用口语，简短，一般一两句、最多三句、不超过120个字；不要 Markdown、列表、编号、链接、表情、括号注释。'
+          '用口语；先想清楚再答，给出有用的结论和理由，简单问题一两句，一般不超过200字，复杂的安排、分析可以多说一点；'
+          '不要 Markdown、列表符号、编号、链接、表情、括号注释。'
           '需要实时信息（天气、新闻、价格等）就联网搜索。'
           '下面附有用户这台设备录下的对话的整理（AI 总结和最近的原话），只有问题和它们有关时才用；'
           '引用时说清是什么时候说的。录音里没有的不要编。联网搜索时只搜公开信息，绝不把录音里的内容、人名或私事写进搜索词。'
@@ -78,7 +86,7 @@ def background(locked=False):
     return text[-MAX_CONTEXT:]
 
 
-def answer(question, locked=False):
+def answer(question, locked=False, mode='smart'):
     with _memory_lock:
         now = time.time()
         _memory[:] = [m for m in _memory if now - m[0] < MEMORY_S][-MEMORY_TURNS:]
@@ -88,7 +96,8 @@ def answer(question, locked=False):
     for _at, q, a in turns:
         msgs += [{'role': 'user', 'content': q}, {'role': 'assistant', 'content': a}]
     msgs.append({'role': 'user', 'content': question})
-    body = {'model': 'deepseek-flash', 'thinking': {'type': 'disabled'}, 'max_tokens': 500,
+    model, think = MODES.get(mode, MODES['smart'])
+    body = {'model': model, 'thinking': {'type': 'enabled' if think else 'disabled'}, 'max_tokens': 2000,
             'tools': [{'type': 'deepseek_web_search'}, {'type': 'deepseek_read_url'}], 'messages': msgs}
     out = json.loads(_post(CHAT, body))
     text = (out['choices'][0]['message'].get('content') or '').strip()
@@ -110,11 +119,33 @@ def louder(wav, boost_db):
     return r.stdout if r.returncode == 0 and r.stdout[:4] == b'RIFF' else wav
 
 
+def _tts(text):
+    return _post(TTS, {'text': text, 'voice_id': VOICE, 'format': 'pcm'}, timeout=60)
+
+
 def speak(text, boost_db=0):
-    return louder(_post(TTS, {'text': text[:2000], 'voice_id': VOICE, 'format': 'wav'}, timeout=60), boost_db)
+    """The answer spoken: sentence by sentence, all at once (DeepSeek takes 50 together), joined --
+    a long answer takes about its longest sentence, not their sum (measured: 6.1 s in one piece)."""
+    parts = [p.strip() for p in re.split(r'(?<=[。！？!?；;])', text[:2000]) if p.strip()]
+    # (very short pieces ride with the next: a pause between each costs nothing, a request each does)
+    merged = []
+    for p in parts:
+        if merged and len(merged[-1]) < 12:
+            merged[-1] += p
+        else:
+            merged.append(p)
+    with ThreadPoolExecutor(min(8, max(1, len(merged)))) as pool:
+        pcm = b''.join(pool.map(_tts, merged or [text]))
+    b = io.BytesIO()
+    with wave.open(b, 'wb') as w:           # (DeepSeek's pcm: 24 kHz, 16-bit, mono)
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(pcm)
+    return louder(b.getvalue(), boost_db)
 
 
-def ask(wav, locked=False, boost_db=8):
+def ask(wav, locked=False, boost_db=8, mode='smart'):
     t0 = time.monotonic()
     question = e5rec.asr_wav(wav)
     t1 = time.monotonic()
@@ -122,7 +153,7 @@ def ask(wav, locked=False, boost_db=8):
         reply = '没听清，请再说一遍。'
     else:
         try:
-            reply = answer(question, locked) or '我没想好怎么回答，换个问法试试。'
+            reply = answer(question, locked, mode) or '我没想好怎么回答，换个问法试试。'
         except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
             e5rec.log(f'assistant: answer failed: {e}')
             reply = '网络不太好，我现在回答不了。'

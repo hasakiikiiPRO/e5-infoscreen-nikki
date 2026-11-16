@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "1.2",
+	"version": "1.3",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -35,6 +35,43 @@
 					"label": {
 						"zh": "关",
 						"en": "Off"
+					}
+				}
+			]
+		},
+		{
+			"id": "mode",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.mode",
+			"default": "smart",
+			"label": {
+				"zh": "思考程度",
+				"en": "Thinking"
+			},
+			"note": {
+				"zh": "聪明：先想再答，约多等 2–3 秒；最聪明（V4 Pro）更慢，效果和聪明差不多",
+				"en": "Smart thinks first (+2-3 s)"
+			},
+			"options": [
+				{
+					"value": "fast",
+					"label": {
+						"zh": "快速（不思考）",
+						"en": "Fast"
+					}
+				},
+				{
+					"value": "smart",
+					"label": {
+						"zh": "聪明（推荐）",
+						"en": "Smart"
+					}
+				},
+				{
+					"value": "best",
+					"label": {
+						"zh": "最聪明（V4 Pro，慢）",
+						"en": "Best (slow)"
 					}
 				}
 			]
