@@ -42,7 +42,7 @@
 				'color:#e8ecf2;border-radius:14px;padding:12px 14px;font:14px/1.55 "Noto Sans CJK SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);' +
 				'max-height:70vh;overflow:hidden;box-sizing:border-box}#e5-assist .q{color:#8fb6ff;margin-bottom:6px}#e5-assist .st{color:#8997a8;font-size:12px;margin-top:6px}' +
 				'#e5-assist .mic{display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff5a5a;margin-right:6px;animation:e5a 1s infinite}' +
-				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}';
+				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}#e5-assist .now{color:#e8ecf2;font-size:13px}#e5-assist .st{margin-top:2px}';
 			document.head.appendChild(css);
 			card = document.createElement('div');
 			card.id = 'e5-assist';
@@ -64,7 +64,15 @@
 		if (s.phase == 'listening') return show(s.auto
 			? '<div><span class="mic"></span>继续说……（6 秒不说话就结束）</div><div class="st">按中间键结束对话</div>'
 			: '<div><span class="mic"></span>在听……说完松开中间键</div>');
-		if (s.phase == 'thinking') return show('<div>想一下……</div>');
+		if (s.phase == 'thinking') {
+			// (what it is doing now: what it heard, what it searches, which recordings it reads)
+			const st = Array.isArray(s.steps) ? s.steps : [];
+			const heard = st.find((x) => String(x).startsWith('听到：'));
+			const rest = st.filter((x) => x !== heard).slice(-3);
+			return show((heard ? `<div class="q">${esc(String(heard).slice(3))}</div>` : '')
+				+ (rest.length ? rest.map((x, i) => `<div class="${i == rest.length - 1 ? 'now' : 'st'}">${i == rest.length - 1 ? '⏳ ' : '✓ '}${esc(x)}</div>`).join('')
+					: '<div class="now">⏳ 想一下……</div>'));
+		}
 		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '');
 		if (s.phase == 'speaking') return show(qa + '<div class="st">正在说 · 按中间键停止</div>');
 		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">按中间键关闭</div>`);

@@ -216,7 +216,9 @@ def to_wav(pcm):
     return b.getvalue()
 
 
-def ask(wav):
+def ask(wav, step=lambda steps: None):
+    """The NAS's answer; its progress lines (X-Stream) handed to step() as they come.
+    None when cancelled meanwhile."""
     url, token = uci('upload_url'), uci('upload_token')
     if not url or not token or not os.path.exists(NAS_CERT):
         raise RuntimeError('还没设置 NAS（在「录音」应用里）')
@@ -226,13 +228,34 @@ def ask(wav):
     try:
         conn.request('POST', '/v1/assistant', body=wav, headers={
             'Authorization': 'Bearer ' + token, 'Content-Type': 'audio/wav', 'X-Locked': '1' if LOCKED else '0',
-            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'max')})
+            'X-Boost': setting('boost', '8'), 'X-Mode': setting('mode', 'max'), 'X-Stream': '1'})
         r = conn.getresponse()
-        body = json.loads(r.read() or b'{}')
+        if r.status != 200:
+            try:
+                body = json.loads(r.read() or b'{}')
+            except ValueError:
+                body = {}
+            raise RuntimeError(body.get('error') or f'NAS 返回 {r.status}')
+        steps, body = [], {}
+        while True:
+            line = r.readline()
+            if said(CANCEL):
+                return None
+            if not line:
+                break
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if 'progress' in o:
+                steps.append(str(o['progress']))
+                step(steps[-4:])
+            else:
+                body = o
     finally:
         conn.close()
-    if r.status != 200 or not body.get('ok'):
-        raise RuntimeError(body.get('error') or f'NAS 返回 {r.status}')
+    if not body.get('ok'):
+        raise RuntimeError(body.get('error') or 'NAS 没给回答（连接断了？）')
     return body
 
 
@@ -315,8 +338,8 @@ def main():
             if secs < MIN_S:
                 return state('done', short=True, error='按住时间太短，没录到话')
             state('thinking', seconds=round(secs, 1), turn=TURN[0])
-            r = ask(to_wav(pcm))
-            if said(CANCEL):
+            r = ask(to_wav(pcm), lambda steps: state('thinking', seconds=round(secs, 1), turn=TURN[0], steps=steps))
+            if r is None or said(CANCEL):
                 return state('done', cancelled=True)
             q, a = r.get('question') or '', r.get('answer') or ''
             remember(q, a)

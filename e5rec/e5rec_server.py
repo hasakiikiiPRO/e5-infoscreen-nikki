@@ -26,7 +26,8 @@ Reading (the token -- the E5's screen app -- or the web page's session cookie):
 
 The pocket assistant (the E5's held OK key):
   POST /v1/assistant                   a WAV of the question (<= 8 MiB, <= 120 s) -> {question, answer,
-                                       audio: the answer spoken, a 24 kHz WAV, base64}
+                                       audio: the answer spoken, a 24 kHz WAV, base64}; with X-Stream: 1,
+                                       {"progress": ...} lines first (what it is doing), that object last
 
 Config (/vol2/1000/e5rec/server.json, mode 600):
   {"token": "...", "web_password": "...", "port": 18420, "cert": "tls/cert.pem", "key": "tls/key.pem"}
@@ -402,17 +403,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if len(wav) != n or wav[:4] != b'RIFF' or wav[8:12] != b'WAVE':
             return self.reply(400, {'ok': False, 'error': 'not a WAV'})
         try:
-            try:
-                boost = max(0, min(14, int(self.headers.get('X-Boost') or 8)))
-            except ValueError:
-                boost = 8
-            mode = self.headers.get('X-Mode') if self.headers.get('X-Mode') in e5assist.MODES else e5assist.DEFAULT_MODE
-            r = e5assist.ask(wav, locked=self.headers.get('X-Locked') == '1', boost_db=boost, mode=mode)
+            boost = max(0, min(14, int(self.headers.get('X-Boost') or 8)))
+        except ValueError:
+            boost = 8
+        mode = self.headers.get('X-Mode') if self.headers.get('X-Mode') in e5assist.MODES else e5assist.DEFAULT_MODE
+        locked = self.headers.get('X-Locked') == '1'
+        if self.headers.get('X-Stream') == '1':
+            return self.assistant_stream(wav, locked, boost, mode)
+        try:
+            r = e5assist.ask(wav, locked=locked, boost_db=boost, mode=mode)
         except Exception as e:
             log(f'assistant: {e}')
             return self.reply(502, {'ok': False, 'error': '助手出错了'})
         self.reply(200, {'ok': True, 'question': r['question'], 'answer': r['answer'], 'timing': r['timing'],
                          'audio': base64.b64encode(r['wav']).decode()})
+
+    def assistant_stream(self, wav, locked, boost, mode):
+        """One JSON per line as it goes -- {"progress": "..."} -- the answer last (as the plain reply);
+        the end of the response is the end of it (HTTP/1.0: no length, the connection closes)."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-ndjson; charset=utf-8')
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        lock = threading.Lock()
+
+        def line(obj):
+            with lock:
+                self.wfile.write(json.dumps(obj, ensure_ascii=False).encode() + b'\n')
+                self.wfile.flush()
+
+        def progress(text):
+            try:
+                line({'progress': str(text)[:200]})
+            except OSError:
+                pass                            # (the E5 gave up: the answer still goes to history)
+        try:
+            r = e5assist.ask(wav, locked=locked, boost_db=boost, mode=mode, progress=progress)
+            line({'ok': True, 'question': r['question'], 'answer': r['answer'], 'timing': r['timing'],
+                  'audio': base64.b64encode(r['wav']).decode()})
+        except OSError:
+            pass
+        except Exception as e:
+            log(f'assistant: {e}')
+            try:
+                line({'ok': False, 'error': '助手出错了'})
+            except OSError:
+                pass
 
     def do_PUT(self):
         auth = self.headers.get('Authorization', '')

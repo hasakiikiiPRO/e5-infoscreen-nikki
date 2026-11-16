@@ -194,6 +194,22 @@ FUNCS = {'web_search': web_search, 'recordings_days': recordings_days, 'recordin
          'recordings_search': recordings_search, 'recordings_transcript': recordings_transcript}
 
 
+def describe(call):
+    """What a tool call is doing, for the E5's card."""
+    try:
+        a = json.loads(call['function'].get('arguments') or '{}')
+    except ValueError:
+        a = {}
+    n = call['function']['name']
+    return {'web_search': lambda: f"四引擎搜索：{a.get('query', '')}",
+            'recordings_days': lambda: '看有哪些天的录音',
+            'recordings_day': lambda: f"看 {a.get('date', '')} 的录音总结",
+            'recordings_search': lambda: f"在录音里找：{a.get('query', '')}",
+            'recordings_transcript': lambda: '读录音原文' + (f"：{a.get('date')} {a.get('time_from') or ''}-{a.get('time_to') or ''}".rstrip('-')
+                                                         if a.get('date') else ''),
+            }.get(n, lambda: n)()
+
+
 def run_tool(call, allowed):
     name = call['function']['name']
     try:
@@ -207,7 +223,7 @@ def run_tool(call, allowed):
     return {'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps(out, ensure_ascii=False)[:20000]}
 
 
-def answer(question, locked=False, mode=DEFAULT_MODE):
+def answer(question, locked=False, mode=DEFAULT_MODE, progress=lambda text: None):
     with _memory_lock:
         now = time.time()
         _memory[:] = [m for m in _memory if now - m[0] < MEMORY_S][-MEMORY_TURNS:]
@@ -228,6 +244,7 @@ def answer(question, locked=False, mode=DEFAULT_MODE):
                 **({'reasoning_effort': effort} if effort else {}), 'messages': msgs,
                 # (the last round: no more tools, an answer from what there is)
                 **({} if last else {'tools': tools})}
+        progress('整理答案…' if last else '在想…' if rnd == 0 else '看了结果，接着想…')
         out = json.loads(_post(CHAT, body, timeout=max(30, min(180, deadline - time.monotonic()))))
         m = out['choices'][0]['message']
         calls = [c for c in (m.get('tool_calls') or []) if c.get('type') == 'function']
@@ -235,6 +252,7 @@ def answer(question, locked=False, mode=DEFAULT_MODE):
             text = (m.get('content') or '').strip()
             break
         msgs.append({k: m[k] for k in ('role', 'content', 'reasoning_content', 'tool_calls') if k in m})
+        progress('；'.join(describe(c) for c in calls))
         with ThreadPoolExecutor(min(4, len(calls))) as pool:
             msgs.extend(pool.map(lambda c: run_tool(c, allowed), calls))
     if not locked:
@@ -281,19 +299,23 @@ def speak(text, boost_db=0):
     return louder(b.getvalue(), boost_db)
 
 
-def ask(wav, locked=False, boost_db=8, mode=DEFAULT_MODE):
+def ask(wav, locked=False, boost_db=8, mode=DEFAULT_MODE, progress=lambda text: None):
     t0 = time.monotonic()
+    progress('听…')
     question = e5rec.asr_wav(wav)
     t1 = time.monotonic()
+    if question:
+        progress(f'听到：{question}')
     if not question:
         reply = '没听清，请再说一遍。'
     else:
         try:
-            reply = answer(question, locked, mode) or '我没想好怎么回答，换个问法试试。'
+            reply = answer(question, locked, mode, progress) or '我没想好怎么回答，换个问法试试。'
         except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as e:
             e5rec.log(f'assistant: answer failed: {e}')
             reply = '网络不太好，我现在回答不了。'
     t2 = time.monotonic()
+    progress('合成语音…')
     try:
         audio = speak(reply, boost_db)
     except (urllib.error.URLError, TimeoutError) as e:

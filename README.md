@@ -211,6 +211,7 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
   - `web_search`：**自己的四引擎搜索**（Exa + Bing + SearXNG + Grok 并发去重，就是 Claude Desktop 用的 `…/websearch/search`，配置放 NAS 的 `websearch.json`，不进 git），全面但约 10 多秒；另有 DeepSeek 自带的快速搜索（天气这类）和读网页。
   - 录音**渐进式查看**（和 e5rec MCP 一个思路）：`recordings_days`（哪些天有录音、当日标题）→ `recordings_day`（当天总结和每段摘要、待办）→ `recordings_search`（全部录音逐句全文搜）→ `recordings_transcript`（读原文）。提示词里只放今天的总结和最近两小时原话，其余按需去查。锁屏上不给录音工具。
   - 实测：「今天下午录了什么」先查当天总结再读原文，16 秒；「全面查一下 DeepSeek 这个月的新功能」并发搜了 4 次，约 65 秒，答得全。
+- **卡片上实时显示它在干什么**：NAS 的 `/v1/assistant` 加 `X-Stream: 1` 时按行推送进度（`{"progress": …}`，最后一行是答案），E5 边收边写状态：先显示听到的问题，再逐条显示「在想… / 四引擎搜索：… / 看 11-16 的录音总结 / 读录音原文 / 合成语音…」（最新一条带 ⏳，做完的打 ✓）；这期间按中间键也能立刻取消。
 - **思考程度**（默认「最强」：`deepseek-flash` 思考强度 max，**不限回答长度**）。实测一个排日程的问题：不思考 1.5 秒只给大概；high 4 秒有理有据；max 11.6 秒排到每个小时。V4 Pro 慢且不更好，不提供。设置里可选 快速 / 标准 / 最强。
 - 长回答按句**并行合成**再拼接（DeepSeek 允许同时 50 个）：28 秒的回答合成从 6.1 秒降到 1.9 秒。
 - 设置：开关、思考程度、长按时长、连续对话、回答音量。应用页显示最近的问答。
