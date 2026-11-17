@@ -46,36 +46,45 @@
 			+ `<span class="dbadge ${dot}">${badge}</span></div>`
 			+ `<div class="dlabel">${esc(a.full_label || a.name)}</div>${body}${more}</div>`;
 	}
-	function Dash(root) {
-		let data = null, tab = 'all', sel = 0, open = -1, list = [];
+	// the user's order: Claude first (before 全部), DeepSeek next, then 全部 and the rest as they come
+	const FIRST = ['claude', 'deepseek'];
+	function Dash(root, onRefresh) {
+		// sel -1: the 立即刷新 button (up from the first card)
+		let data = null, tab = null, sel = 0, open = -1, list = [], refreshing = false;
 		const tabs = () => {
 			const groups = {};
 			for (const a of data?.accounts ?? []) if (!a.relay) groups[a.source] = (groups[a.source] ?? 0) + 1;
-			return [['all', '全部', Object.values(groups).reduce((x, y) => x + y, 0)], ...Object.entries(groups).map(([k, n]) => [k, k, n])];
+			const all = ['all', '全部', Object.values(groups).reduce((x, y) => x + y, 0)];
+			const rest = Object.entries(groups).map(([k, n]) => [k, k, n]);
+			const first = FIRST.flatMap((f) => rest.filter((t) => t[0].toLowerCase() == f));
+			return [...first, all, ...rest.filter((t) => !first.includes(t))];
 		};
 		function draw(keepScroll) {
 			if (!data) { root.innerHTML = '<div class="dempty">正在从 NAS 读取配额…</div>'; return; }
 			const all = (data.accounts ?? []).filter((a) => !a.relay);
+			if (tab == null || !tabs().some((t) => t[0] == tab)) tab = tabs()[0][0];
 			list = tab == 'all' ? all : all.filter((a) => a.source == tab);
-			sel = Math.max(0, Math.min(sel, list.length - 1));
+			sel = Math.max(-1, Math.min(sel, list.length - 1));
 			const ok = all.filter((a) => a.state == 'ok').length, lim = all.filter((a) => a.state == 'limited').length;
 			const rec = (data.recommend ?? []).filter((r) => r.resets_at_ms > Date.now()).slice(0, 3);
 			const age = data.age != null ? (data.age < 90 ? '刚刚' : `${Math.round(data.age / 60)} 分钟前`) : '';
 			const head = `<div class="dh"><b>AI 配额监控</b><span>${data.error ? '⚠️ ' : ''}${age ? age + '更新' : esc(data.updated_at || '')}</span></div>`
+				+ `<div class="drf${sel == -1 ? ' sel' : ''}">${refreshing ? '⏳ 正在刷新（NAS 重新拉一遍，约半分钟）…' : '⟳ 立即刷新'}</div>`
 				+ `<div class="dstats"><span>总账号 <b>${all.length}</b></span><span class="ok">正常 <b>${ok}</b></span>${lim ? `<span class="limited">受限 <b>${lim}</b></span>` : ''}</div>`
 				+ `<div class="dtabs">${tabs().map(([k, name, n]) => `<span class="dtab${k == tab ? ' on' : ''}">${esc(name)} <i>${n}</i></span>`).join('')}</div>`
 				+ (rec.length ? `<div class="drec"><span class="drt">周额度先用</span>${rec.map((r, i) => `<span class="drp${i ? '' : ' first'}"><b>${esc(r.model)}</b> 剩 ${r.left}% · ${formatReset(r.resets_at_ms).replace(/^剩 /, '')}后重置</span>`).join('')}</div>` : '');
 			const scroll = keepScroll ? root.scrollTop : 0;
 			root.innerHTML = head + (list.map((a, i) => cardHTML(a, i, sel, open)).join('') || '<div class="dempty">这一类没有账号</div>')
-				+ '<div class="dhint">←→ 切换类别 · ↑↓ 选择 · 确定 展开详情</div>';
+				+ '<div class="dhint">←→ 切换类别 · ↑↓ 选择 · 确定 展开详情 · 最上面是立即刷新</div>';
 			root.scrollTop = scroll;
 			root.querySelector('.dtab.on')?.scrollIntoView({ block: 'nearest', inline: 'center' });
-			if (keepScroll) root.querySelector('.dc.sel')?.scrollIntoView({ block: 'nearest' });
+			if (keepScroll) root.querySelector('.dc.sel, .drf.sel')?.scrollIntoView({ block: 'nearest' });
 		}
 		return {
 			set(d) { data = d; draw(true); },
-			reset() { tab = 'all'; sel = 0; open = -1; root.scrollTop = 0; draw(false); },
-			onFirstTab: () => tab == 'all',
+			refreshing(on) { refreshing = on; draw(true); },
+			reset() { tab = null; sel = 0; open = -1; root.scrollTop = 0; draw(false); },
+			onFirstTab: () => !data || tab == tabs()[0][0],
 			key(kind) {
 				if (!data) return false;
 				const ts = tabs().map((t) => t[0]);
@@ -86,13 +95,15 @@
 					return true;
 				}
 				if (kind == 'up' || kind == 'down') {
-					if (!list.length) return true;
-					if (kind == 'up' && sel == 0) { root.scrollTop = 0; return true; }
-					sel = Math.max(0, Math.min(list.length - 1, sel + (kind == 'down' ? 1 : -1)));
+					sel = Math.max(-1, Math.min(list.length - 1, sel + (kind == 'down' ? 1 : -1)));
+					if (sel == -1) root.scrollTop = 0;
 					draw(true);
 					return true;
 				}
-				if (kind == 'ok') { open = open == sel ? -1 : sel; draw(true); return true; }
+				if (kind == 'ok') {
+					if (sel == -1) { if (!refreshing && onRefresh) onRefresh(); return true; }
+					open = open == sel ? -1 : sel; draw(true); return true;
+				}
 				return false;
 			},
 		};
@@ -126,4 +137,5 @@
 		'.dpt{height:5px;background:#1a202c;border-radius:3px;overflow:hidden;margin-top:3px}.dpb{height:100%;border-radius:3px;background:#10b981}.dpb.warn{background:#f59e0b}.dpb.limited{background:#f43f5e}' +
 		'.dmore{margin-top:7px;border-top:1px solid #1c2230;padding-top:5px}.dx{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:#94a3b8;margin-top:2px}' +
 		'.dx span:last-child{color:#cbd5e1;text-align:right;word-break:break-all}.dsec{font-size:11px;color:#64748b;margin-top:5px}' +
+		'.drf{font-size:12px;color:#93c5fd;border:1px dashed #2d374e;border-radius:8px;padding:4px 8px;margin-bottom:6px;text-align:center}.drf.sel{border-color:#dce8ff;color:#f3f6fa;border-style:solid}' +
 		'.dempty{color:#64748b;text-align:center;padding:30px 0;font-size:12px}.dhint{color:#64748b;font-size:10.5px;text-align:center;padding:4px 0 2px}';

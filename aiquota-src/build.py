@@ -36,18 +36,28 @@ early = '''<script>/* BEGIN e5-aiquota (the aiquota app, /etc/e5-infoscreen/plug
 		panel.id = 'lock-quota';
 		panel.hidden = true;
 		ls.appendChild(panel);
-		dash = Dash(panel);
+		dash = Dash(panel, refreshNow);
 		return panel;
+	}
+	let since = null, until = 0;
+	function refreshNow() {
+		// the NAS fetches everything again (some 30-40 s); followed until the data is newer
+		fetch(API + '/refresh', { method: 'POST', cache: 'no-store' }).then((r) => r.json()).then((d) => {
+			since = d.before ?? 0; until = Date.now() + 120000;
+			dash.refreshing(true); load();
+		}, () => {});
 	}
 	function load() {
 		clearTimeout(timer);
-		fetch(API + '/quota', { cache: 'no-store' }).then((r) => {
+		fetch(API + '/quota' + (since != null ? '?fresh=1' : ''), { cache: 'no-store' }).then((r) => {
 			if (r.status == 404) { gone = true; close(); return null; }
 			return r.json().catch(() => null);
 		}).then((d) => {
 			if (gone || !open) return;
+			const waiting = since != null && Date.now() < until && !((d?.generated_at_ms ?? 0) > since);
+			if (since != null && !waiting) { since = null; dash.refreshing(false); }
 			// (the next refresh is set first: odd data must not stop it for good)
-			timer = setTimeout(load, !d?.accounts ? 4000 : 60000);
+			timer = setTimeout(load, !d?.accounts || waiting ? 3000 : 60000);
 			if (d?.accounts) try { dash.set(d); } catch (e) { console.log('aiquota: ' + e); }
 			else if (d?.error) panel.innerHTML = `<div class="dempty">${esc(d.error)}</div>`;
 		}, () => { if (open) timer = setTimeout(load, 5000); });
@@ -108,12 +118,20 @@ index = '''<!doctype html>
 const style = document.createElement('style');
 style.textContent = DCSS;
 document.head.appendChild(style);
-const dash = Dash(document.getElementById('root'));
+let since = null, until = 0, timer = null;
+async function refreshNow() {
+	try { const d = await e5.api('/refresh', { method: 'POST' }); since = d.before ?? 0; until = Date.now() + 120000; dash.refreshing(true); load(); }
+	catch (e) { console.log('aiquota: ' + e); }
+}
+const dash = Dash(document.getElementById('root'), refreshNow);
 dash.reset();
 async function load() {
+	clearTimeout(timer);
 	let d = null;
-	try { d = await e5.api('/quota'); } catch (e) { document.getElementById('root').innerHTML = `<div class="dempty">${esc(e.message || e)}</div>`; }
-	setTimeout(load, !d?.accounts ? 4000 : 60000);
+	try { d = await e5.api('/quota' + (since != null ? '?fresh=1' : '')); } catch (e) { document.getElementById('root').innerHTML = `<div class="dempty">${esc(e.message || e)}</div>`; }
+	const waiting = since != null && Date.now() < until && !((d?.generated_at_ms ?? 0) > since);
+	if (since != null && !waiting) { since = null; dash.refreshing(false); }
+	timer = setTimeout(load, !d?.accounts || waiting ? 3000 : 60000);
 	if (d?.accounts) try { dash.set(d); } catch (e) { console.log('aiquota: ' + e); }
 }
 e5.onKey((k) => dash.key(k.kind));

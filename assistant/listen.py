@@ -55,6 +55,9 @@ TURN_MAX_S = 30
 QUIET_S = 1.3                           # this long quiet after speech: the turn is said (a pause between sentences is ~1.1 s)
 CHUNK = 1440                            # 30 ms at 48 kHz, 16-bit mono: 2880 bytes
 MAX_TURNS = 10
+SETTLE_S = 0.4                          # the motor's own pulse, heard by the microphone: not speech
+START_CHUNKS = 5                        # 0.15 s loud in a row: speech has begun
+MIN_LOUD = 8                            # under 0.24 s loud in all: a knock or a cough, not a question
 
 sys.path.insert(0, '/opt/e5')
 spec = importlib.util.spec_from_file_location('e5_capture', '/opt/e5/e5-capture.py')
@@ -144,14 +147,14 @@ def listen(auto=False):
                 pass
             if said(CANCEL):
                 return None
-            if said(STOP):
+            if not auto and said(STOP):
                 raise RuntimeError('松手太快，还没开始录')
             if call_waiting():
                 raise RuntimeError('有来电')
             time.sleep(0.25)
         if cap is None:
             raise RuntimeError('麦克风被占用（通话中？）')
-        if said(STOP):
+        if not auto and said(STOP):
             raise RuntimeError('松手太快，还没开始录')
         fd = cap.recorder.stdout.fileno()
         pcm = bytearray()
@@ -160,8 +163,9 @@ def listen(auto=False):
             buzz()
         end = time.monotonic() + (TURN_MAX_S if auto else MAX_S)
         # (auto: the noise floor from the quietest stretch, speech well above it)
-        floor, started, quiet, buf = None, False, 0, bytearray()
+        floor, started, quiet, loud_n, buf = None, False, 0, 0, bytearray()
         give_up = time.monotonic() + WAIT_S
+        settle = time.monotonic() + (SETTLE_S if auto else 0)
         while time.monotonic() < end and (auto or not said(STOP)):
             if said(CANCEL):
                 return None
@@ -179,6 +183,8 @@ def listen(auto=False):
             buf += data
             while len(buf) >= CHUNK * 2:
                 chunk, buf = bytes(buf[:CHUNK * 2]), buf[CHUNK * 2:]
+                if time.monotonic() < settle:
+                    continue
                 level = rms(chunk)
                 # (the room's own noise: down at once to the quietest, up only slowly)
                 floor = level if floor is None or level < floor else floor * 1.003
@@ -190,14 +196,19 @@ def listen(auto=False):
                     # (0.3 s kept before the speech begins)
                     del pcm[:-CHUNK * 2 * 10]
                     quiet = quiet + 1 if loud else 0
-                    if quiet >= 3:
-                        started, quiet = True, 0
+                    if quiet >= START_CHUNKS:
+                        started, quiet, loud_n = True, 0, quiet
                     elif time.monotonic() > give_up:
                         return b''
                 else:
+                    loud_n += loud
                     quiet = 0 if loud else quiet + 1
                     if quiet * CHUNK / RATE >= QUIET_S:
-                        return bytes(pcm)
+                        if loud_n >= MIN_LOUD:
+                            return bytes(pcm)
+                        # (a blip: forget it, keep waiting for the question)
+                        started, quiet, loud_n = False, 0, 0
+                        del pcm[:]
         if auto and not started:
             return b''
         return bytes(pcm[:len(pcm) // 2 * 2])
@@ -318,6 +329,7 @@ def speak(audio, fmt='wav', secs=None):
 
 
 TURN = [0]
+last_balance = [None]
 
 
 def keep_want(stop):
@@ -345,26 +357,31 @@ def main():
     try:
         state('starting')
         while True:
-            pcm = listen(auto=TURN[0] > 0)
+            # (every turn, the first too, ends by the sound: the key only summons, it may be let go after the pulse)
+            pcm = listen(auto=True)
             if pcm is None:
                 return state('done', cancelled=True, question=q, answer=a)
-            if TURN[0] and not pcm:
-                return state('done', ended=True, question=q, answer=a, turn=TURN[0])
+            if not pcm:
+                if not TURN[0]:
+                    return state('done', short=True, error='没听到你说话（震一下之后直接说就行）')
+                return state('done', ended=True, question=q, answer=a, turn=TURN[0], balance=last_balance[0])
             secs = len(pcm) / 2 / RATE
             if secs < MIN_S:
-                return state('done', short=True, error='按住时间太短，没录到话')
+                return state('done', short=True, error='没听清，太短了')
             state('thinking', seconds=round(secs, 1), turn=TURN[0])
             r = ask(to_wav(pcm), lambda steps: state('thinking', seconds=round(secs, 1), turn=TURN[0], steps=steps))
             if r is None or said(CANCEL):
                 return state('done', cancelled=True)
             q, a = r.get('question') or '', r.get('answer') or ''
             remember(q, a)
-            state('speaking', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])
+            bal = r.get('balance')
+            state('speaking', question=q, answer=a, timing=r.get('timing'), turn=TURN[0], balance=bal)
             audio = base64.b64decode(r.get('audio') or '')
             if audio:
                 speak(audio, r.get('format') or 'wav', r.get('seconds'))
             if said(CANCEL):
                 return state('done', cancelled=True, question=q, answer=a)
+            last_balance[0] = bal
             skipped = said(SKIP)
             if skipped:
                 try:
@@ -373,7 +390,7 @@ def main():
                     pass
             # (nothing heard, or a one-question setting: that is the end of it)
             if not continuous or not q or TURN[0] + 1 >= MAX_TURNS:
-                return state('done', question=q, answer=a, timing=r.get('timing'), turn=TURN[0])
+                return state('done', question=q, answer=a, timing=r.get('timing'), turn=TURN[0], balance=bal)
             TURN[0] += 1
             try:
                 os.unlink(STOP)              # (the first turn's release: the later turns hold no key)

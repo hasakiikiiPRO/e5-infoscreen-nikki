@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "1.7",
+	"version": "1.9",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -82,8 +82,8 @@
 			"uci": "e5-plugin-assistant.settings.hold_ms",
 			"default": "600",
 			"label": {
-				"zh": "按住多久算长按",
-				"en": "Hold for"
+				"zh": "按住多久召唤",
+				"en": "Hold to summon"
 			},
 			"options": [
 				{
@@ -179,6 +179,36 @@
 					"label": {
 						"zh": "最大",
 						"en": "Loudest"
+					}
+				}
+			]
+		},
+		{
+			"id": "lock_private",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.lock_private",
+			"default": "0",
+			"label": {
+				"zh": "锁屏时隐藏录音",
+				"en": "Recordings hidden when locked"
+			},
+			"note": {
+				"zh": "关（默认）：锁屏时也能查录音、记得上下文；开：锁屏时只答一般问题",
+				"en": "Off: full access on the lock screen"
+			},
+			"options": [
+				{
+					"value": "0",
+					"label": {
+						"zh": "关（锁屏也能查）",
+						"en": "Off"
+					}
+				},
+				{
+					"value": "1",
+					"label": {
+						"zh": "开",
+						"en": "On"
 					}
 				}
 			]

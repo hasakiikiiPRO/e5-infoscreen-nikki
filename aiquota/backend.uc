@@ -6,7 +6,8 @@
 // refreshed in the background, at most once a minute; only one with accounts in it replaces it.
 // On the lock screen: early.html, put in the screen's index.html before power-menu.js (like
 // the sidekey app's: mobile.js takes every other key on the lock screen).
-//   GET /quota            {ok, age, accounts, recommend, sites, updated_at, error}
+//   GET /quota[?fresh=1]  {ok, age, accounts, recommend, sites, updated_at, error} (fresh: fetch now, not after TTL)
+//   POST /refresh         the NAS to fetch everything again now -> {before: the generated_at_ms shown}
 //   GET /notifications    (the minute check: early.html put in, if not)
 import { readfile, writefile, rename, stat, unlink, mkdir } from 'fs';
 
@@ -34,7 +35,7 @@ return function(ctx) {
 		mkdir(RUN);
 		ctx.run(`chmod 700 '${RUN}'`);
 		let f = stat(RUN + '/fetching');
-		if (f && time() - (f.mtime ?? 0) < 90) return;
+		if (f && time() - (f.mtime ?? 0) < 45) return;
 		writefile(RUN + '/fetching', '');
 		// (the token in a header file only root reads, not on a command line)
 		let hdr = 'Authorization: Bearer ' + n.token + '\n';
@@ -76,13 +77,24 @@ return function(ctx) {
 			let n = nas();
 			if (!n) return fail('还没设置 NAS（在「录音」应用里）', 409);
 			let st = stat(CACHE);
-			if (!st || time() - st.mtime >= TTL) refresh(n);
+			if (!st || time() - st.mtime >= (req.query?.fresh ? 3 : TTL)) refresh(n);
 			let d = null;
 			try { d = json(readfile(CACHE) ?? 'null'); } catch (e) {}
 			if (type(d) != 'object') return { ok: true, accounts: null, loading: true };
 			// (how old the data is: from when the NAS made it, not when it came here)
 			let made = type(d.generated_at_ms) == 'int' ? d.generated_at_ms / 1000 : st.mtime;
 			return { ok: true, ...d, age: time() - made };
+		},
+		'POST /refresh': function(req) {
+			let n = nas();
+			if (!n) return fail('还没设置 NAS（在「录音」应用里）', 409);
+			mkdir(RUN);
+			let hdr = 'Authorization: Bearer ' + n.token + '\n';
+			if (readfile(HDR) != hdr) { writefile(HDR + '.new', hdr); rename(HDR + '.new', HDR); }
+			ctx.run(`setsid curl -sf -m 20 --noproxy '*' --cacert '${NAS_CERT}' -H @'${HDR}' -X POST '${n.url}/v1/quota/refresh' </dev/null >/dev/null 2>&1 &`);
+			let d = null;
+			try { d = json(readfile(CACHE) ?? 'null'); } catch (e) {}
+			return { ok: true, before: type(d) == 'object' ? d.generated_at_ms ?? 0 : 0 };
 		},
 		'GET /notifications': function(req) {
 			checks();

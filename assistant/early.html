@@ -43,7 +43,7 @@
 				'color:#e8ecf2;border-radius:14px;padding:12px 14px;font:14px/1.55 "Noto Sans CJK SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5);' +
 				'max-height:78vh;overflow-y:auto;scrollbar-width:none;box-sizing:border-box}#e5-assist .q{color:#8fb6ff;margin-bottom:6px}#e5-assist .st{color:#8997a8;font-size:12px;margin-top:6px}' +
 				'#e5-assist .mic{display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff5a5a;margin-right:6px;animation:e5a 1s infinite}' +
-				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}#e5-assist .now{color:#e8ecf2;font-size:13px}#e5-assist .st{margin-top:2px}';
+				'@keyframes e5a{50%{opacity:.3}}#e5-assist .err{color:#ffb0b0}#e5-assist .now{color:#e8ecf2;font-size:13px}#e5-assist .st{margin-top:2px}#e5-assist .bal{color:#c9a7ff;font-size:11px;margin-top:6px}';
 			document.head.appendChild(css);
 			card = document.createElement('div');
 			card.id = 'e5-assist';
@@ -65,10 +65,10 @@
 	const open = () => card && !card.hidden;
 
 	function render(s) {
-		if (s.phase == 'starting') return show('<div>准备中……（震一下就可以说了）</div>');
-		if (s.phase == 'listening') return show(s.auto
+		if (s.phase == 'starting') return show('<div>准备中……（震一下就可以松手说了）</div>');
+		if (s.phase == 'listening') return show(s.turn
 			? '<div><span class="mic"></span>继续说……（6 秒不说话就结束）</div><div class="st">按中间键结束对话</div>'
-			: '<div><span class="mic"></span>在听……说完松开中间键</div>');
+			: '<div><span class="mic"></span>在听，可以松手说了……说完停一下就好</div>');
 		if (s.phase == 'thinking') {
 			// (what it is doing now: what it heard, what it searches, which recordings it reads)
 			const st = Array.isArray(s.steps) ? s.steps : [];
@@ -78,7 +78,8 @@
 				+ (rest.length ? rest.map((x, i) => `<div class="${i == rest.length - 1 ? 'now' : 'st'}">${i == rest.length - 1 ? '⏳ ' : '✓ '}${esc(x)}</div>`).join('')
 					: '<div class="now">⏳ 想一下……</div>'));
 		}
-		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '');
+		const qa = (s.question ? `<div class="q">${esc(s.question)}</div>` : '') + (s.answer ? `<div>${esc(s.answer)}</div>` : '')
+			+ (s.balance ? `<div class="bal">DeepSeek 余额 ${esc(s.balance)}</div>` : '');
 		if (s.phase == 'speaking') return show(qa + `<div class="st">正在说 · ↑↓ 翻看 · 按中间键${cfg?.continuous === false ? '停止' : '跳过，直接说下一句'}</div>`);
 		if (s.phase == 'error') return show(qa + `<div class="err">${esc(s.error || '出错了')}</div><div class="st">↑↓ 翻看 · 按中间键关闭</div>`);
 		if (s.phase == 'done') {
@@ -93,7 +94,6 @@
 		fetch(API + '/state', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
 			if (g != gen) return;
 			if (s.run != run) { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
-			if (s.phase == 'listening' && !buzzed) { buzzed = true; buzz(60); }
 			if (s.phase != phase && card) card.scrollTop = 0;     // (a new step of the conversation: from its top)
 			phase = s.phase;
 			render(s);
@@ -121,8 +121,8 @@
 		safety = setTimeout(() => { if (held?.fired) { held = null; finish(); } }, SAFETY_MS);
 	}
 	function finish() {
+		// (the key only summons: letting it go stops nothing -- the turn ends when the speech does)
 		clearTimeout(safety);
-		post('/stop').catch(() => {});
 	}
 	function tapBack(p) {
 		// the key as if never held: Enter where it went down, down then up

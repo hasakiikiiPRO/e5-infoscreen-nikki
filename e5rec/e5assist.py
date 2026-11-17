@@ -329,6 +329,18 @@ def to_mp3(wav):
     return r.stdout if r.returncode == 0 and r.stdout else None
 
 
+def balance():
+    """DeepSeek's balance, as the card shows it (GET, no tokens): '¥93.20', or None."""
+    try:
+        req = urllib.request.Request('https://api.deepseek.com/user/balance', headers={'Authorization': 'Bearer ' + e5rec.DEEPSEEK_KEY})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=8) as r:
+            d = json.load(r)
+        info = next((b for b in d.get('balance_infos') or [] if b.get('currency') == 'CNY'), (d.get('balance_infos') or [{}])[0])
+        return ('¥' if info.get('currency', 'CNY') == 'CNY' else info.get('currency', '') + ' ') + f"{float(info.get('total_balance') or 0):.2f}"
+    except Exception:
+        return None
+
+
 def wav_seconds(wav):
     try:
         with wave.open(io.BytesIO(wav)) as w:
@@ -383,5 +395,5 @@ def ask(wav, locked=False, boost_db=8, mode=DEFAULT_MODE, progress=lambda text: 
         audio = b''
     t3 = time.monotonic()
     e5rec.log(f'assistant: heard {t1 - t0:.1f}s, answered {t2 - t1:.1f}s, spoke {t3 - t2:.1f}s: {question!r}')
-    return {'question': question, 'answer': reply, 'wav': audio,
+    return {'question': question, 'answer': reply, 'wav': audio, 'balance': balance(),
             'timing': {'asr': round(t1 - t0, 1), 'answer': round(t2 - t1, 1), 'tts': round(t3 - t2, 1)}}

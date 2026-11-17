@@ -22,6 +22,7 @@ Reading (the token -- the E5's screen app -- or the web page's session cookie):
   GET /v1/audio/<name>                 the MP3 (the web page's player; Range works)
   GET /v1/quota                        the AI accounts' quotas: quota-tray's own payload, written by
                                        quota-export.py (quota_file in server.json), and how old it is
+  POST /v1/quota/refresh               a new round now (quota-export.py watches <quota_file>.refresh)
   GET /                                the web page (web.html); POST /v1/login {"password"} sets the cookie
 
 The pocket assistant (the E5's held OK key):
@@ -355,6 +356,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == '/v1/assistant':
             return self.assistant()
+        if self.path == '/v1/quota/refresh':
+            if not self.authed():
+                time.sleep(0.5)
+                return self.reply(401, {'ok': False, 'error': 'unauthorized'})
+            p = Path(CFG.get('quota_file') or HERE / 'quota.json')
+            Path(str(p) + '.refresh').touch()
+            return self.reply(200, {'ok': True})
         if self.path == '/v1/logout':
             session_end(self.cookie())
             return self.reply(200, {'ok': True}, [('Set-Cookie', 'e5s=; Max-Age=0; Path=/; Secure; HttpOnly; SameSite=Strict')])
@@ -446,7 +454,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if mp3:
                     audio, fmt = mp3, 'mp3'
             line({'ok': True, 'question': r['question'], 'answer': r['answer'], 'timing': r['timing'],
-                  'format': fmt, 'seconds': e5assist.wav_seconds(r['wav']), 'audio': base64.b64encode(audio).decode()})
+                  'format': fmt, 'seconds': e5assist.wav_seconds(r['wav']), 'balance': r.get('balance'),
+                  'audio': base64.b64encode(audio).decode()})
         except OSError:
             pass
         except Exception as e:

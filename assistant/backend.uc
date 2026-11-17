@@ -96,7 +96,9 @@ return function(ctx) {
 			ctx.run(`chmod 700 '${RUN}'; rm -f '${RUN}/stop' '${RUN}/cancel'`);
 			writefile(`${RUN}/run`, run);
 			writefile(`${RUN}/state.json`, sprintf('%J', { phase: 'starting', run, at: time() }));
-			let locked = req.body?.locked ? 'locked' : 'open';
+			// (asked from the lock screen: the recordings stay out only if lock_private is on -- off by default:
+			// a voice conversation should not need the screen unlocked)
+			let locked = req.body?.locked && ctx.uci().get('e5-plugin-assistant', 'settings', 'lock_private') == '1' ? 'locked' : 'open';
 			// (the pid written as it is started: a second press within python's start-up sees it)
 			ctx.run(`cd / && (setsid /usr/bin/python3 '${APP}/listen.py' '${run}' '${locked}' </dev/null >/dev/null 2>&1 & echo $! > '${RUN}/pid')`);
 			return { ok: true, run };
