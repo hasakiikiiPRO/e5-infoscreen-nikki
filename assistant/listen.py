@@ -21,12 +21,10 @@ earlier run, or arriving before this one started, is not taken for this one.
 Each step goes to STATE (with the run id) for the screen.  The recorder's flag
 and the pid file are removed only by the run that wrote them.
 """
-import array
 import base64
 import http.client
 import importlib.util
 import json
-import math
 import os
 import select
 import signal
@@ -49,23 +47,22 @@ RATE = 48000
 MAX_S = 60
 MIN_S = 0.6
 NAS_TIMEOUT = 240                       # (the NAS's own worst case: ASR + thinking hard with search + speech)
-# a conversation's later turns: no key held, the sound tells
-WAIT_S = 6                              # nothing said this long after the pulse: it is over
-TURN_MAX_S = 30
-QUIET_S = 1.3                           # this long quiet after speech: the turn is said (a pause between sentences is ~1.1 s)
-CHUNK = 1440                            # 30 ms at 48 kHz, 16-bit mono: 2880 bytes
+# every turn ends by the sound (vad.py): no key held
 MAX_TURNS = 10
-SETTLE_S = 0.4                          # the motor's own pulse, heard by the microphone: not speech
-START_CHUNKS = 5                        # 0.15 s loud in a row: speech has begun
-MIN_LOUD = 8                            # under 0.24 s loud in all: a knock or a cough, not a question
 
 sys.path.insert(0, '/opt/e5')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import vad  # noqa: E402
 spec = importlib.util.spec_from_file_location('e5_capture', '/opt/e5/e5-capture.py')
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 
 RUN_ID = sys.argv[1] if len(sys.argv) > 1 else ''
 LOCKED = len(sys.argv) > 2 and sys.argv[2] == 'locked'
+# called by a wake word (wake.py): the first question is heard by wake.py, from the stream it
+# already has (no gap after the word), and handed over in WAKE_PCM
+WOKEN = len(sys.argv) > 3 and sys.argv[3] == 'wake'
+WAKE_PCM = f'{RUN}/wake-{RUN_ID}.pcm'
 ME = str(os.getpid())
 
 
@@ -93,7 +90,7 @@ def said(path):
 def state(phase, **kw):
     tmp = f'{STATE}.{ME}'
     with open(tmp, 'w') as f:
-        json.dump({'phase': phase, 'run': RUN_ID, 'at': time.time(), 'pid': os.getpid(), **kw}, f, ensure_ascii=False)
+        json.dump({'phase': phase, 'run': RUN_ID, 'at': time.time(), 'pid': os.getpid(), 'wake': WOKEN, **kw}, f, ensure_ascii=False)
     os.replace(tmp, STATE)
 
 
@@ -123,11 +120,6 @@ def call_waiting():
 
 def buzz(ms=60):
     subprocess.Popen(['e5-vibrate', str(ms)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def rms(b):
-    a = array.array('h', b)
-    return math.sqrt(sum(x * x for x in a) / len(a)) if a else 0.0
 
 
 def listen(auto=False):
@@ -161,11 +153,8 @@ def listen(auto=False):
         state('listening', since=time.time(), turn=TURN[0], auto=auto)
         if auto:
             buzz()
-        end = time.monotonic() + (TURN_MAX_S if auto else MAX_S)
-        # (auto: the noise floor from the quietest stretch, speech well above it)
-        floor, started, quiet, loud_n, buf = None, False, 0, 0, bytearray()
-        give_up = time.monotonic() + WAIT_S
-        settle = time.monotonic() + (SETTLE_S if auto else 0)
+        end = time.monotonic() + MAX_S
+        q = vad.Question() if auto else None
         while time.monotonic() < end and (auto or not said(STOP)):
             if said(CANCEL):
                 return None
@@ -173,6 +162,10 @@ def listen(auto=False):
                 raise RuntimeError('有来电，不问了')
             r, _, _ = select.select([fd], [], [], 0.1)
             if not r:
+                if q:
+                    done = q.feed(b'')
+                    if done is not None:
+                        return done
                 continue
             data = os.read(fd, 65536)
             if not data:
@@ -180,37 +173,11 @@ def listen(auto=False):
             if not auto:
                 pcm += data
                 continue
-            buf += data
-            while len(buf) >= CHUNK * 2:
-                chunk, buf = bytes(buf[:CHUNK * 2]), buf[CHUNK * 2:]
-                if time.monotonic() < settle:
-                    continue
-                level = rms(chunk)
-                # (the room's own noise: down at once to the quietest, up only slowly)
-                floor = level if floor is None or level < floor else floor * 1.003
-                floor = max(floor, 30.0)
-                # (measured on this microphone: speech ~150-480, a quiet room ~25-100)
-                loud = level > max(floor * 2.5, 110)
-                pcm += chunk
-                if not started:
-                    # (0.3 s kept before the speech begins)
-                    del pcm[:-CHUNK * 2 * 10]
-                    quiet = quiet + 1 if loud else 0
-                    if quiet >= START_CHUNKS:
-                        started, quiet, loud_n = True, 0, quiet
-                    elif time.monotonic() > give_up:
-                        return b''
-                else:
-                    loud_n += loud
-                    quiet = 0 if loud else quiet + 1
-                    if quiet * CHUNK / RATE >= QUIET_S:
-                        if loud_n >= MIN_LOUD:
-                            return bytes(pcm)
-                        # (a blip: forget it, keep waiting for the question)
-                        started, quiet, loud_n = False, 0, 0
-                        del pcm[:]
-        if auto and not started:
-            return b''
+            done = q.feed(data)
+            if done is not None:
+                return done
+        if auto:
+            return bytes(q.pcm) if q.started else b''
         return bytes(pcm[:len(pcm) // 2 * 2])
     finally:
         if cap is not None:
@@ -332,6 +299,30 @@ TURN = [0]
 last_balance = [None]
 
 
+def woken_question():
+    """The first question after a wake word: wake.py's PCM (b'' for nothing said), None if cancelled."""
+    state('listening', since=time.time(), turn=0, auto=True, wake=True)
+    end = time.monotonic() + vad.WAIT_S + vad.TURN_MAX_S + 10
+    try:
+        while time.monotonic() < end:
+            if said(CANCEL):
+                return None
+            if call_waiting():
+                raise RuntimeError('有来电，不问了')
+            try:
+                with open(WAKE_PCM, 'rb') as f:
+                    return f.read()
+            except FileNotFoundError:
+                time.sleep(0.1)
+        raise RuntimeError('唤醒后没收到问题（唤醒服务没响应）')
+    finally:
+        for p in (WAKE_PCM, WAKE_PCM + '.part'):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+
+
 def keep_want(stop):
     """The recorder's flag for the whole conversation, fresh (it counts as gone after 90 s)."""
     while not stop.wait(10):
@@ -347,10 +338,15 @@ def main():
     os.makedirs(RUN, mode=0o700, exist_ok=True)
     with open(PIDF, 'w') as f:
         f.write(ME)
-    with open(WANT, 'w') as f:
-        f.write(ME)
     fresh = threading.Event()
-    threading.Thread(target=keep_want, args=(fresh,), daemon=True).start()
+
+    def want():
+        # (the recorder lets go of the microphone: not while wake.py still hears the question from it)
+        with open(WANT, 'w') as f:
+            f.write(ME)
+        threading.Thread(target=keep_want, args=(fresh,), daemon=True).start()
+    if not WOKEN:
+        want()
     wake(True)
     continuous = setting('continuous', '1') == '1'
     q = a = None
@@ -358,16 +354,27 @@ def main():
         state('starting')
         while True:
             # (every turn, the first too, ends by the sound: the key only summons, it may be let go after the pulse)
-            pcm = listen(auto=True)
+            if WOKEN and not TURN[0]:
+                pcm = woken_question()
+            else:
+                pcm = listen(auto=True)
             if pcm is None:
                 return state('done', cancelled=True, question=q, answer=a)
             if not pcm:
+                if WOKEN and not TURN[0]:
+                    # (a wake word heard by mistake, nothing after it: the card just goes)
+                    return state('done', cancelled=True, woken=True)
                 if not TURN[0]:
                     return state('done', short=True, error='没听到你说话（震一下之后直接说就行）')
                 return state('done', ended=True, question=q, answer=a, turn=TURN[0], balance=last_balance[0])
             secs = len(pcm) / 2 / RATE
             if secs < MIN_S:
+                if WOKEN and not TURN[0]:
+                    return state('done', cancelled=True, woken=True)
                 return state('done', short=True, error='没听清，太短了')
+            if WOKEN and not TURN[0]:
+                # (only now the recorder lets go: a wake word heard by mistake does not cut its recording)
+                want()
             state('thinking', seconds=round(secs, 1), turn=TURN[0])
             r = ask(to_wav(pcm), lambda steps: state('thinking', seconds=round(secs, 1), turn=TURN[0], steps=steps))
             if r is None or said(CANCEL):

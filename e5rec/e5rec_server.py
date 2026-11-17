@@ -23,6 +23,8 @@ Reading (the token -- the E5's screen app -- or the web page's session cookie):
   GET /v1/quota                        the AI accounts' quotas: quota-tray's own payload, written by
                                        quota-export.py (quota_file in server.json), and how old it is
   POST /v1/quota/refresh               a new round now (quota-export.py watches <quota_file>.refresh)
+  GET /v1/kws/e5-kws-<n>.tar.gz        the assistant's wake-word runtime (kws/ here; too big for its
+                                       plugin package: the E5 fetches it once, checks its SHA-256)
   GET /                                the web page (web.html); POST /v1/login {"password"} sets the cookie
 
 The pocket assistant (the E5's held OK key):
@@ -299,6 +301,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.reply(200, r) if r else self.reply(404, {'ok': False, 'error': 'no such recording'})
             if m and m.group(1) == 'audio' and STORED.match(m.group(2)):
                 return self.send_audio(e5rec.day_dir(m.group(2)) / f'{m.group(2)}.mp3')
+            m = re.fullmatch(r'/v1/kws/(e5-kws-\d+\.tar\.gz)', u.path)
+            if m:
+                return self.send_audio(HERE / 'kws' / m.group(1), 'application/gzip')
         except ValueError:
             return self.reply(400, {'ok': False, 'error': 'bad request'})
         self.reply(404, {'ok': False, 'error': 'not found'})
@@ -320,7 +325,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_audio(self, p):
+    def send_audio(self, p, ctype='audio/mpeg'):
         try:
             size = p.stat().st_size
         except OSError:
@@ -339,7 +344,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Range', f'bytes {lo}-{hi}/{size}')
         else:
             self.send_response(200)
-        self.send_header('Content-Type', 'audio/mpeg')
+        self.send_header('Content-Type', ctype)
         self.send_header('Accept-Ranges', 'bytes')
         self.send_header('Content-Length', str(hi - lo + 1))
         self.end_headers()

@@ -6,12 +6,16 @@
 // synthetic Enter where it was pressed: the screen and the apps read Enter's key,
 // not the button's own default).  From the lock screen the NAS leaves the
 // recordings out of it: what was said there is no one's to hear without unlocking.
+// Called by name (the setting "wake": wake.py hears 「贾维斯」/「大肥鱼」), the run starts
+// without a key: while the card is down this looks at /state every WATCH_MS and takes up
+// a run started that way, as if the key had been held.
 // Before power-menu.js and mobile.js (their capturing listeners take keys on the
 // lock screen), like the sidekey app's.  Not while the screen is dark, in a call,
 // with the power menu up, or without the app (GET /state 404: nothing at all).
 (function () {
 	const API = '/api/plugins/assistant';
 	const SAFETY_MS = 65000;                     // (listen.py stops at 60 s itself)
+	const WATCH_MS = 1500;
 	let cfg = null, cfgAt = -Infinity, gone = false;
 	let held = null, pass = false, card = null, poll = null, hideAt = 0;
 	let run = null, gen = 0, buzzed = false, safety = null;
@@ -68,6 +72,7 @@
 		if (s.phase == 'starting') return show('<div>准备中……（震一下就可以松手说了）</div>');
 		if (s.phase == 'listening') return show(s.turn
 			? '<div><span class="mic"></span>继续说……（6 秒不说话就结束）</div><div class="st">按中间键结束对话</div>'
+			: s.wake ? '<div><span class="mic"></span>在呢，说吧……说完停一下就好</div>'
 			: '<div><span class="mic"></span>在听，可以松手说了……说完停一下就好</div>');
 		if (s.phase == 'thinking') {
 			// (what it is doing now: what it heard, what it searches, which recordings it reads)
@@ -93,7 +98,12 @@
 		clearTimeout(poll);
 		fetch(API + '/state', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
 			if (g != gen) return;
-			if (s.run != run) { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
+			if (s.run != run) {
+				// (a run called by name while this one's answer was still up: that one now)
+				if (s.wake === true && (phase == null || phase == 'done' || phase == 'error')
+					&& s.phase != 'done' && s.phase != 'error') { run = s.run; phase = null; hideAt = 0; }
+				else { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
+			}
 			if (s.phase != phase && card) card.scrollTop = 0;     // (a new step of the conversation: from its top)
 			phase = s.phase;
 			render(s);
@@ -105,6 +115,22 @@
 		}, () => { if (g == gen) poll = setTimeout(follow, 1000); });
 	}
 
+	function watch() {
+		// (only with the wake words on, the card down, no key held, the screen lit: no one sees it otherwise)
+		setTimeout(watch, WATCH_MS);
+		config();                                   // (the setting itself: at most every 30 s)
+		// (an answer still up counts as down: a new run called by name replaces it)
+		const shown = open() && phase != 'done' && phase != 'error';
+		if (gone || !cfg?.wake_service?.enabled || shown || held || dark()) return;
+		fetch(API + '/state', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
+			cfg = { ...cfg, wake_service: s.wake_service };
+			if (s.wake !== true || !s.run || s.run == run || held) return;
+			if (s.phase == 'done' || s.phase == 'error') return;
+			hide();
+			run = s.run; buzzed = true; hideAt = 0; phase = null;
+			follow();
+		}, () => {});
+	}
 	function begin() {
 		hide();
 		const g = gen;
@@ -200,5 +226,6 @@
 		if (p.fired) finish();
 	});
 	config();
+	setTimeout(watch, WATCH_MS);
 })();
 /* END e5-assistant */</script>

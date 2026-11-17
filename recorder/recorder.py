@@ -46,6 +46,12 @@ GONE_LOOPS = 30                         # (~30 s gone: removed, not a reinstall)
 # a flag older than this is left over from a crash and ignored
 ASSIST_WANT = '/tmp/run/e5-assistant.want'
 ASSIST_MAX_S = 90
+# the assistant's wake words (its wake.py) hear what is recorded, from a copy: both go on.
+# Never waited for: no reader, or a full pipe, and the copy is dropped
+WAKE_FEED = '/tmp/run/e5-wake/feed'
+# touched before each try for the microphone: the wake words' service (holding it while this
+# does not record) lets go of it
+WANTS_MIC = RUN + '/wants-mic'
 
 
 def log(msg):
@@ -132,6 +138,47 @@ routing = capture.routing
 RATE = 48000
 
 
+class Feed:
+    """The copy for the wake words (WAKE_FEED, a FIFO wake.py holds open while it listens)."""
+
+    def __init__(self):
+        self.fd, self.retry_at, self.rest = None, 0, b''
+
+    def write(self, data):
+        # (whole samples only, in pieces a pipe takes whole or not at all: never half a sample)
+        data, self.rest = self.rest + data, b''
+        if len(data) % 2:
+            data, self.rest = data[:-1], data[-1:]
+        if self.fd is None:
+            if time.monotonic() < self.retry_at:
+                return
+            try:
+                self.fd = os.open(WAKE_FEED, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:
+                # (not there, or no one reading: look again in a while)
+                self.retry_at = time.monotonic() + 5
+                return
+        try:
+            for i in range(0, len(data), 4096):         # (PIPE_BUF: each piece written whole)
+                os.write(self.fd, data[i:i + 4096])
+        except BlockingIOError:
+            pass                        # (a full pipe: it is not listening now)
+        except OSError:
+            self.close()
+            self.retry_at = time.monotonic() + 5
+
+    def close(self):
+        if self.fd is not None:
+            try:
+                os.close(self.fd)
+            except OSError:
+                pass
+            self.fd = None
+
+
+feed = Feed()
+
+
 class Segment:
     def __init__(self):
         os.makedirs(OUT, exist_ok=True)
@@ -163,6 +210,7 @@ class Segment:
             if not data:
                 raise RuntimeError('the microphone stream ended')
             self.rest = self.mp3.write(self.rest + data)
+            feed.write(data)
 
     def seconds(self):
         return self.mp3.frames / RATE
@@ -394,7 +442,16 @@ def main():
             err = f'存储不足（剩 {fm} MB），等电脑同步后再录'
         if not seg and want and not call and not assist and time.monotonic() >= blocked_until and fm >= MIN_FREE_MB:
             try:
-                seg = Segment()
+                open(WANTS_MIC, 'w').close()
+                for _ in range(8):
+                    try:
+                        seg = Segment()
+                        break
+                    except BlockingIOError:
+                        # (the wake words' service lets go within ~0.5 s of the flag)
+                        time.sleep(0.25)
+                else:
+                    seg = Segment()
                 err = None
             except BlockingIOError as e:
                 err = f'麦克风被占用（{e}），稍后重试'

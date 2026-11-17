@@ -4,12 +4,13 @@
 // while the screen is locked) holds the key and shows what happens; listen.py
 // does one question (starting -> listening -> thinking -> speaking -> done).
 //   GET  /state     what the current run last wrote ({run, phase, question, answer, error})
-//   POST /start     {locked}: a new run (the last one ended first) -> {run}
+//   POST /start     {locked} or {wake}: a new run (the last one ended first) -> {run}; wake: called by
+//                   name (wake.py, which hears the first question itself and hands it over)
 //   POST /stop      the key let go: stop listening (the current run)
 //   POST /cancel    drop the current run (and its voice)
 //   POST /skip      enough of the answer read: stop the voice (and, in a conversation, listen again)
 //   GET  /history   the last questions and answers
-//   GET  /notifications  (the minute check: early.html put in, if not)
+//   GET  /notifications  (the minute check: early.html put in, the wake service installed, if not)
 import { readfile, writefile, rename, stat, unlink, mkdir } from 'fs';
 
 const APP = '/etc/e5-infoscreen/plugins/assistant';
@@ -18,6 +19,7 @@ const INDEX = '/usr/share/e5-infoscreen/www/index.html';
 const ANCHOR = '<script src="power-menu.js"></script>\n';
 const BEGIN = '<script>/* BEGIN e5-assistant', END = '/* END e5-assistant */</script>\n';
 const HISTORY = '/mnt/e5-data/e5assist/history.json';
+const INIT = '/etc/init.d/e5-assistant-wake', WAKE_STATE = '/tmp/run/e5-wake/state.json';
 const STARTING_S = 10;                  // (python's start and the microphone: "starting" is not "gone" before this)
 
 return function(ctx) {
@@ -60,10 +62,30 @@ return function(ctx) {
 		ctx.log('index.html patched (hold OK to ask), the screen restarts');
 		ctx.run("setsid sh -c 'sleep 2; /etc/init.d/e5-infoscreen restart' >/dev/null 2>&1 &");
 	}
+	function service_running() {
+		let s = ctx.ubus('service', 'list', { name: 'e5-assistant-wake' })?.['e5-assistant-wake'];
+		for (let k, inst in (s?.instances ?? {})) if (inst.running) return true;
+		return false;
+	}
+	function ensure_service() {
+		let want = readfile(`${APP}/wake.init`);
+		if (!want) return;
+		if (readfile(INIT) != want) {
+			ctx.run(`cp '${APP}/wake.init' '${INIT}.new' && chmod 755 '${INIT}.new' && ` +
+				`mv -f '${INIT}.new' '${INIT}' && '${INIT}' enable && '${INIT}' restart >/dev/null 2>&1`);
+			ctx.log('wake service installed');
+		} else if (!service_running()) {
+			ctx.run(`'${INIT}' enable; '${INIT}' start >/dev/null 2>&1`);
+		} else if (readfile(`${APP}/wake.py`) != readfile('/var/run/e5-assistant-wake.running')) {
+			ctx.run(`setsid '${INIT}' restart >/dev/null 2>&1 &`);
+			ctx.log('wake service restarted for the new version');
+		}
+	}
 	function checks() {
 		if (!ctx.state_get('checked', 60)) {
 			ctx.state_put('checked', { at: time() });
 			ensure_early();
+			ensure_service();
 		}
 	}
 	function hold_ms() {
@@ -80,7 +102,8 @@ return function(ctx) {
 			if (!busy && !fresh && s.phase != 'done' && s.phase != 'error' && s.phase != 'idle')
 				s = { ...s, phase: 'error', error: '助手进程意外退出了' };
 			return { ok: true, ...s, busy, current: current(), hold_ms: hold_ms(), enabled: enabled(),
-				continuous: ctx.uci().get('e5-plugin-assistant', 'settings', 'continuous') != '0' };
+				continuous: ctx.uci().get('e5-plugin-assistant', 'settings', 'continuous') != '0',
+				wake_service: load(WAKE_STATE, null) };
 		},
 		'POST /start': function(req) {
 			checks();
@@ -90,17 +113,19 @@ return function(ctx) {
 				mark('cancel');
 				ctx.run(`kill ${pid} 2>/dev/null; kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null`);
 			}
+			// (called by name the screen may be locked or not: with lock_private on, taken as locked)
+			let woken = req.body?.wake == true;
 			let c = clock() ?? [ time(), 0 ];
 			let run = sprintf('%d-%09d', c[0], c[1]);
 			mkdir(RUN);
 			ctx.run(`chmod 700 '${RUN}'; rm -f '${RUN}/stop' '${RUN}/cancel'`);
 			writefile(`${RUN}/run`, run);
-			writefile(`${RUN}/state.json`, sprintf('%J', { phase: 'starting', run, at: time() }));
+			writefile(`${RUN}/state.json`, sprintf('%J', { phase: 'starting', run, at: time(), wake: woken }));
 			// (asked from the lock screen: the recordings stay out only if lock_private is on -- off by default:
 			// a voice conversation should not need the screen unlocked)
-			let locked = req.body?.locked && ctx.uci().get('e5-plugin-assistant', 'settings', 'lock_private') == '1' ? 'locked' : 'open';
+			let locked = (req.body?.locked || woken) && ctx.uci().get('e5-plugin-assistant', 'settings', 'lock_private') == '1' ? 'locked' : 'open';
 			// (the pid written as it is started: a second press within python's start-up sees it)
-			ctx.run(`cd / && (setsid /usr/bin/python3 '${APP}/listen.py' '${run}' '${locked}' </dev/null >/dev/null 2>&1 & echo $! > '${RUN}/pid')`);
+			ctx.run(`cd / && (setsid /usr/bin/python3 '${APP}/listen.py' '${run}' '${locked}' '${woken ? 'wake' : 'key'}' </dev/null >/dev/null 2>&1 & echo $! > '${RUN}/pid')`);
 			return { ok: true, run };
 		},
 		'POST /stop': function(req) {

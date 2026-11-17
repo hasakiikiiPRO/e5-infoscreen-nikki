@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "1.9",
+	"version": "2.0",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -209,6 +209,106 @@
 					"label": {
 						"zh": "开",
 						"en": "On"
+					}
+				}
+			]
+		},
+		{
+			"id": "wake",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.wake",
+			"default": "0",
+			"label": {
+				"zh": "喊名字召唤",
+				"en": "Call it by name"
+			},
+			"note": {
+				"zh": "喊「贾维斯」或「大肥鱼」，震一下就接着说（可以一口气说完）。全在本机识别，不上传；开着时多用约一成 CPU，不录音时会让 E5 不进深睡（更费电）",
+				"en": "Say the name; spotted on the E5 itself, uses more battery"
+			},
+			"options": [
+				{
+					"value": "0",
+					"label": {
+						"zh": "关",
+						"en": "Off"
+					}
+				},
+				{
+					"value": "1",
+					"label": {
+						"zh": "开",
+						"en": "On"
+					}
+				}
+			]
+		},
+		{
+			"id": "wake_words",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.wake_words",
+			"default": "jarvis fish",
+			"label": {
+				"zh": "唤醒词",
+				"en": "Wake words"
+			},
+			"options": [
+				{
+					"value": "jarvis fish",
+					"label": {
+						"zh": "贾维斯、大肥鱼都行",
+						"en": "Both"
+					}
+				},
+				{
+					"value": "jarvis",
+					"label": {
+						"zh": "只用贾维斯",
+						"en": "Jarvis only"
+					}
+				},
+				{
+					"value": "fish",
+					"label": {
+						"zh": "只用大肥鱼",
+						"en": "Big fat fish only"
+					}
+				}
+			]
+		},
+		{
+			"id": "wake_sensitivity",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.wake_sensitivity",
+			"default": "normal",
+			"label": {
+				"zh": "唤醒灵敏度",
+				"en": "Wake sensitivity"
+			},
+			"note": {
+				"zh": "喊了没反应就调灵敏；没喊却自己醒了就调严格",
+				"en": "More sensitive: fewer misses, more false wakes"
+			},
+			"options": [
+				{
+					"value": "high",
+					"label": {
+						"zh": "灵敏",
+						"en": "High"
+					}
+				},
+				{
+					"value": "normal",
+					"label": {
+						"zh": "标准",
+						"en": "Normal"
+					}
+				},
+				{
+					"value": "low",
+					"label": {
+						"zh": "严格",
+						"en": "Strict"
 					}
 				}
 			]
