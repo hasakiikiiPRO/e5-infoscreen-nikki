@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "2.0",
+	"version": "2.1",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -239,6 +239,36 @@
 					"label": {
 						"zh": "开",
 						"en": "On"
+					}
+				}
+			]
+		},
+		{
+			"id": "wake_reply",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.wake_reply",
+			"default": "1",
+			"label": {
+				"zh": "喊名字后先应答",
+				"en": "Answer to the name"
+			},
+			"note": {
+				"zh": "喊完名字停住时，先说「我在，你说」再听（离得远也知道它在）；喊完接着就说的话不插嘴",
+				"en": "Says it is listening before you ask"
+			},
+			"options": [
+				{
+					"value": "1",
+					"label": {
+						"zh": "开",
+						"en": "On"
+					}
+				},
+				{
+					"value": "0",
+					"label": {
+						"zh": "关（只震一下）",
+						"en": "Off (vibrate only)"
 					}
 				}
 			]

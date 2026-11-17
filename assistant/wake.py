@@ -15,8 +15,14 @@ Where the sound comes from (the system has one capture path, e5-capture.py's lea
   a call, the assistant asking, listening or answering: nothing is heard here (and the
   microphone is let go) -- its own voice saying the name would call it again.
 
-A word heard: the motor pulses, and the question said after it is cut from the same
-stream (vad.py: no gap after the word, it may be said in one breath); POST /start
+While the assistant speaks an answer the microphone is free: this listens on, and the name
+said then cuts the answer short for a new question (barge-in) -- not while the answer itself
+holds a name, and given back the moment listen.py wants the microphone (mic.want).
+
+A word heard: the motor pulses and -- unless the question is already being said, in one
+breath with the word -- it answers aloud first (here.wav, 「我在，你说」: heard from across
+the room; setting "wake_reply"), what the microphone takes meanwhile thrown away.  The
+question is cut from the same stream (vad.py: no gap after the word); POST /start
 {wake} starts the assistant's run, and listen.py takes the question from
 /tmp/run/e5-assistant/wake-<run>.pcm instead of listening itself -- then on as if
 the key had been held (the card, the answer, the conversation).
@@ -36,6 +42,7 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
+import wave
 
 APP = '/etc/e5-infoscreen/plugins/assistant'
 KWS = '/opt/e5-kws'
@@ -58,6 +65,8 @@ REC_STATE = '/tmp/run/e5-recorder/state.json'
 # the recorder about to take the microphone (it touches this before each try): let it go
 REC_WANTS = '/tmp/run/e5-recorder/wants-mic'
 REC_WANTS_S = 15
+HERE = APP + '/here.wav'               # (the answer to the name; DeepSeek's stella, +8 dB like the answers)
+HERE_TAIL_S = 0.3                       # (the room's echo of it, after it ends: not the question either)
 LATENCY_S = 0.3                         # (a hit is told this long after the word ended, at most: cut that much earlier)
 RING_S = 3                              # what was heard last, kept: the room's noise, the speech after the word
 WORDS = {'jarvis': ('j iǎ w éi s ī', '贾维斯'), 'fish': ('d à f éi y ú', '大肥鱼')}
@@ -135,20 +144,35 @@ def recorder_wants():
         return False
 
 
+def pid_file_alive(path, name='listen.py'):
+    try:
+        pid = open(path).read().strip()
+        return pid.isdigit() and name.encode() in open(f'/proc/{pid}/cmdline', 'rb').read()
+    except OSError:
+        return False
+
+
 def assistant_busy():
-    """The assistant asking or answering (its run), or a call: not for this service's ears."""
+    """The assistant asking (its run listening, thinking), or a call: not for this service's
+    ears.  Speaking an answer it is not: the name then cuts it short."""
+    if call_waiting():
+        return 'call'
+    if pid_file_alive(ARUN + '/pid'):
+        try:
+            s = json.load(open(ARUN + '/state.json'))
+        except (OSError, ValueError):
+            s = {}
+        said = f"{s.get('question') or ''}{s.get('answer') or ''}"
+        if (s.get('phase') == 'speaking' and not pid_file_alive(ARUN + '/mic.want')
+                and not any(WORDS[w][1] in said for w in WORDS)):
+            return None
+        return 'assistant'
     try:
         if time.time() - os.path.getmtime(WANT) < WANT_MAX_S:
             return 'assistant'
     except OSError:
         pass
-    try:
-        pid = open(ARUN + '/pid').read().strip()
-        if pid.isdigit() and b'listen.py' in open(f'/proc/{pid}/cmdline', 'rb').read():
-            return 'assistant'
-    except OSError:
-        pass
-    return 'call' if call_waiting() else None
+    return None
 
 
 class Spotter:
@@ -317,17 +341,31 @@ def start_run():
         return json.loads(r.read() or b'{}').get('run')
 
 
-def other_run(run):
-    """A key held meanwhile (a new run), or someone else asking for the microphone."""
+def wav_seconds(path):
     try:
-        if open(ARUN + '/run').read().strip() != run:
-            return True
+        with wave.open(path) as w:
+            return w.getnframes() / w.getframerate()
+    except Exception:
+        return 0
+
+
+def speaking(fresh, floor):
+    """The question already going on, straight after the word: most of FRESH (heard after the
+    hit itself -- never the word's own tail) loud."""
+    tail = fresh
+    if len(tail) < vad.CHUNK * 2:
+        return False
+    loud = [vad.rms(tail[i:i + vad.CHUNK * 2]) > max((floor or 30) * 2.5, 110)
+            for i in range(0, len(tail) - vad.CHUNK * 2 + 1, vad.CHUNK * 2)]
+    return sum(loud) * 2 >= len(loud)
+
+
+def other_run(run):
+    """A key held meanwhile: a new run (a call is looked at by itself)."""
+    try:
+        return open(ARUN + '/run').read().strip() != run
     except OSError:
         return True
-    try:
-        return time.time() - os.path.getmtime(WANT) < WANT_MAX_S
-    except OSError:
-        return False
 
 
 def cancelled(run):
@@ -500,6 +538,27 @@ def main():
         log('stopped')
 
 
+def read_pcm(fd, feed, mic, want_bytes, limit_s):
+    """Up to WANT_BYTES of whole samples from the source, waiting at most LIMIT_S."""
+    out, end = bytearray(), time.monotonic() + limit_s
+    while len(out) < want_bytes and time.monotonic() < end:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            continue
+        try:
+            data = os.read(fd, 65536)
+        except (BlockingIOError, InterruptedError):
+            continue
+        if not data:
+            break
+        if fd != feed:
+            data, mic.rest = mic.rest + data, b''
+            if len(data) % 2:
+                data, mic.rest = data[:-1], data[-1:]
+        out += data
+    return bytes(out)
+
+
 def heard(word, at, ring, ring_start, feed, mic, source):
     """A wake word: the pulse, the question after it, and the assistant's run with it."""
     buzz()
@@ -509,7 +568,8 @@ def heard(word, at, ring, ring_start, feed, mic, source):
     # (more kept from before the speech: it may go on straight after the word, during the pulse)
     # (no settle: what is here already was heard before the pulse; the pulse itself, 60 ms, is
     # shorter than speech must be to count)
-    q = vad.Question(floor=vad.quietest(before), preroll=25, settle=0)
+    floor = vad.quietest(before)
+    q = vad.Question(floor=floor, preroll=25, settle=0)
     run = None
     try:
         run = start_run()
@@ -518,8 +578,27 @@ def heard(word, at, ring, ring_start, feed, mic, source):
         return
     if not run:
         return
-    pcm = q.feed(after)
     fd = feed if source == 'recorder' else mic.fd()
+    if fd is None:
+        pcm = b''
+    else:
+        # (0.35 s more, after the hit: is the question already being said?)
+        fresh = read_pcm(fd, feed, mic, int(0.35 * RATE) * 2, 1.0)
+        after += fresh
+    # (not said yet: "我在，你说" first, then listened to; while it plays, what comes in is dropped)
+    quiet_until = 0
+    secs = (wav_seconds(HERE) if fd is not None and uci('wake_reply') != '0'
+            and not speaking(fresh, floor) else 0)
+    if fd is None:
+        pass
+    elif secs:
+        subprocess.run(['/usr/libexec/e5-volume', 'play', HERE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        log('answered the name: 我在，你说')
+        quiet_until = time.monotonic() + secs + HERE_TAIL_S
+        q = vad.Question(floor=floor, preroll=10, settle=0)
+        pcm = None
+    else:
+        pcm = q.feed(after)
     while pcm is None and fd is not None:
         if cancelled(run) or call_waiting() or other_run(run):
             pcm = b''
@@ -538,6 +617,11 @@ def heard(word, at, ring, ring_start, feed, mic, source):
             data, mic.rest = mic.rest + data, b''
             if len(data) % 2:
                 data, mic.rest = data[:-1], data[-1:]
+        if time.monotonic() < quiet_until:
+            continue
+        if quiet_until:
+            # (the wait for the question from when it has finished saying 我在)
+            q, quiet_until = vad.Question(floor=floor, preroll=10, settle=0), 0
         pcm = q.feed(data)
     pcm = pcm or b''
     path = f'{ARUN}/wake-{run}.pcm'

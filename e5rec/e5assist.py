@@ -280,6 +280,10 @@ def answer(question, locked=False, mode=DEFAULT_MODE, progress=lambda text: None
     msgs.append({'role': 'user', 'content': question})
     model, effort = MODES.get(mode, MODES[DEFAULT_MODE])
     tools = TOOLS_WEB + TOOLS_NOTE + ([] if locked else TOOLS_REC)
+    if not effort:
+        # (DeepSeek's own search and reader go with other tools only while thinking: 400 otherwise --
+        # not thinking, the four-engine web_search is the search)
+        tools = [t for t in tools if t.get('type') == 'function']
     allowed = {t['function']['name'] for t in tools if t['type'] == 'function'}
     deadline = time.monotonic() + ANSWER_BUDGET_S
     text = ''

@@ -99,9 +99,8 @@
 		fetch(API + '/state', { cache: 'no-store' }).then((r) => r.json()).then((s) => {
 			if (g != gen) return;
 			if (s.run != run) {
-				// (a run called by name while this one's answer was still up: that one now)
-				if (s.wake === true && (phase == null || phase == 'done' || phase == 'error')
-					&& s.phase != 'done' && s.phase != 'error') { run = s.run; phase = null; hideAt = 0; }
+				// (a run called by name -- the answer still up, or cut short by the name: that one now)
+				if (s.wake === true && s.phase != 'done' && s.phase != 'error') { run = s.run; phase = null; hideAt = 0; }
 				else { poll = setTimeout(follow, 350); return; }   // (not our run's state yet)
 			}
 			if (s.phase != phase && card) card.scrollTop = 0;     // (a new step of the conversation: from its top)

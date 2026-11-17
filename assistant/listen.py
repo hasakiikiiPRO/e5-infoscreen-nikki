@@ -38,6 +38,7 @@ import wave
 
 RUN = '/tmp/run/e5-assistant'
 STATE, STOP, CANCEL, PIDF = RUN + '/state.json', RUN + '/stop', RUN + '/cancel', RUN + '/pid'
+MIC_WANT = RUN + '/mic.want'             # (about to take the microphone: wake.py, listening while this speaks, lets go)
 SKIP = RUN + '/skip'                      # (read enough: stop speaking, listen for the next turn)
 ANSWER = RUN + '/answer'                 # (+ .mp3 or .wav)
 WANT = '/tmp/run/e5-assistant.want'
@@ -127,6 +128,8 @@ def listen(auto=False):
     (auto), nothing was said; raises on a call or no microphone."""
     cap = None
     try:
+        with open(MIC_WANT, 'w') as f:
+            f.write(ME)
         # (the recorder looks every 0.25 s and closes its segment: up to ~4 s here)
         for _ in range(16):
             c = capture.Capture()
@@ -182,6 +185,7 @@ def listen(auto=False):
     finally:
         if cap is not None:
             cap.stop()
+        drop_mine(MIC_WANT)
 
 
 def to_wav(pcm):
