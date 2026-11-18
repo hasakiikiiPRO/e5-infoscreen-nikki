@@ -1,0 +1,14 @@
+#!/bin/sh /etc/rc.common
+# e5-dumbres: screen buffers held in reserve for the compositor (no CMA, no compaction on
+# this kernel: after a day or two no whole 1 MB block may be left for a new screen buffer).
+# Also keeps more memory free (vm.min_free_kbytes): whole blocks last longer.
+START=19
+USE_PROCD=1
+
+start_service() {
+	sysctl -q -w vm.min_free_kbytes=65536
+	procd_open_instance
+	procd_set_param command /usr/sbin/e5-dumbres 6
+	procd_set_param respawn 3600 5 0
+	procd_close_instance
+}

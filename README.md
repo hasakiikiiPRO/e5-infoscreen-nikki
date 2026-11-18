@@ -243,6 +243,10 @@ uci set e5-plugin-hotspotdata.settings.mode=data; uci commit e5-plugin-hotspotda
 - **按键**：锁屏按 → 打开；**←→ 切换类别，↑↓ 选账号，确定 展开详情**（完整账号、站点、状态、近 5 小时/近 7 天用量），再按确定收起；在第一个标签上按 ← 或按返回回到时钟。最上面有 **「立即刷新」**：↑ 选到它按确定，NAS 立刻重新拉取全部站点（约 5–30 秒，新数据到了自动换上；`POST /refresh` → NAS `POST /v1/quota/refresh`）。每次亮屏从时钟开始，电源键不变。解锁后也可以打开「配额」应用，按键一样。
 - 两个页面由 `aiquota-src/dash.js` 一份组件生成（`python3 aiquota-src/build.py`），改界面只改这一处。
 
+## 信息屏黑屏（背光亮、画面黑）：`tools/e5-dumbres/`
+
+开机一两天后屏幕可能黑掉：内核没有 CMA 和内存压缩，屏幕要的整块 1 MB 连续内存被碎片吃光。`e5-dumbres` 开机先占住几块屏幕缓冲区，屏幕申请失败时立刻全部让出，并把 `vm.min_free_kbytes` 调到 64 MB。详见 [`tools/e5-dumbres/README.md`](tools/e5-dumbres/README.md)。
+
 ## 双卡：广电 / 移动卡要锁 5G 频段（`tools/`）
 
 这台 E5 的基带有厂商配置错误：**广电、移动的卡如果 5G 频段同时开着 n28 和 n41（或者干脆不锁），一跑数据基带就崩溃重启**（`Modem Assert`，原因 `Drm allocate spr rf path fail`，原厂 Android 上也会）。表现是：显示 5G 已连接、拿到了 IP，但几秒到几分钟后就没网，信号显示 0%。依据：上游 [issue #15](https://github.com/sprd-linux-devs/e5-linux/issues/15) 与 FINDINGS §47.2。
