@@ -27,6 +27,7 @@ struct cd { uint32_t height, width, bpp, flags, handle, pitch; uint64_t size; };
 struct dd { uint32_t handle; };
 #define CREATE _IOWR('d', 0xB2, struct cd)
 #define DESTROY _IOWR('d', 0xB4, struct dd)
+#define DROP_MASTER _IO('d', 0x1f)
 #define MAXKEEP 16
 #define REFILL_S 60
 
@@ -61,6 +62,10 @@ int main(int argc, char **argv) {
   if (keep < 1 || keep > MAXKEEP) keep = 4;
   drm = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
   if (drm < 0) { perror("e5-dumbres: /dev/dri/card0"); return 1; }
+  // (the first to open the device is its master: started before the screen, this would be,
+  // and the compositor could not set the display -- "Swapchain failed test", a black screen.
+  // Buffers need no master: let it go at once; not master already, it fails, harmlessly)
+  ioctl(drm, DROP_MASTER, 0);
   int kmsg = open("/dev/kmsg", O_RDONLY | O_NONBLOCK | O_CLOEXEC);
   if (kmsg < 0) { perror("e5-dumbres: /dev/kmsg"); return 1; }
   while (held < keep && take()) {}
