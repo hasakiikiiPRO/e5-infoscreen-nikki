@@ -10,7 +10,7 @@
 # Needs: curl (through $PROXY if set), docker (arm64 debian's glibc: only copied, never
 # run), python3 (zig from pip, to cross-compile kws.c).
 set -eu
-VERSION=3
+VERSION=5
 SHERPA=v2.0.1
 MODEL=sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -45,7 +45,7 @@ cp $SO/libonnxruntime.so $SO/libsherpa-onnx-c-api.so $R/lib/
 python3 -m venv zig && zig/bin/pip install -q ziglang
 $C -o c-api.h "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/$SHERPA/sherpa-onnx/c-api/c-api.h"
 zig/bin/python -m ziglang cc -target aarch64-linux-gnu.2.17 -O2 -s -Wall -o $R/lib/e5-kws \
-	"$HERE/kws.c" -I. -L$SO -lsherpa-onnx-c-api -lm -Wl,-rpath,'$ORIGIN'
+	"$HERE/kws.c" -I. -I"$HERE" -L$SO -lsherpa-onnx-c-api -lm -Wl,-rpath,'$ORIGIN'
 
 # the streaming model (chunk 8: the shorter wait), int8 where there is one
 M=$MODEL

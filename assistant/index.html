@@ -17,11 +17,18 @@
 	.tip b { color: var(--text); font-weight: 600; }
 	#list { flex: 1; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 7px; }
 	.q { color: var(--blue); } .t { color: var(--dim); font-size: 11px; }
+	#en { border: 1px solid #2a3a52; }
+	#en .w { display: inline-block; padding: 1px 9px; border-radius: 9px; margin-right: 6px; color: var(--dim); }
+	#en .w.on { background: #2b4a7a; color: var(--text); }
+	#en .big { font-size: 17px; margin: 4px 0; }
+	#en .ok { color: #7fd68a; } #en .err { color: #ffb0b0; }
+	#en .dots { letter-spacing: 3px; color: var(--blue); }
 </style>
 </head>
 <body>
 <header class="heading"><strong>助手</strong><span id="st"></span></header>
 <div class="card tip">在任何界面<b>按住中间键</b>约 0.6 秒，<b>震一下就可以松手直接说</b>，说完停一下它就开始想，用喇叭回答，屏幕下方显示问答和 DeepSeek 余额。可以问天气新闻（会联网），也可以问「我今天答应了谁什么」（会查你的录音）。答完会震一下接着听，直接说就能追问，6 秒不说话就结束。说话时按一下中间键就停。</div>
+<div id="en" class="card"></div>
 <div id="list"></div>
 <script src="/sdk/e5.js"></script>
 <script>
@@ -40,10 +47,48 @@ async function load() {
 	} catch (e) { $('list').innerHTML = `<div class="card tip">${esc(e.message || e)}</div>`; }
 	setTimeout(load, 5000);
 }
+// recording your voice saying a wake word (enroll.py): left/right pick the word, OK starts and stops
+const WORDS = [['fish', '大肥鱼'], ['jarvis', '贾维斯']];
+let pick = 0, en = { phase: 'idle', samples: {} }, enPoll = null;
+const enBusy = () => en.busy || en.phase == 'starting' || en.phase == 'say' || en.phase == 'got';
+function enDraw() {
+	const n = en.samples || {};
+	const words = WORDS.map(([w, z], i) => `<span class="w${i == pick ? ' on' : ''}">${z} ${n[w] || 0}</span>`).join('');
+	let body;
+	if (enBusy()) {
+		const dots = '●'.repeat(en.got || 0) + '○'.repeat(Math.max(0, (en.of || 10) - (en.got || 0)));
+		body = en.phase == 'starting' ? '<div class="big">准备麦克风……</div>'
+			: `<div class="big">第 ${Math.min((en.got || 0) + 1, en.of || 10)}/${en.of || 10} 次：请喊「${esc(en.name)}」</div>`
+				+ `<div class="${en.phase == 'got' ? 'ok' : en.miss ? 'err' : 'tip'}">${en.phase == 'got' ? '听到了 ✓' : en.miss ? '没听清，震一下后再喊一次' : '震一下就喊，喊完停一下'}</div>`
+				+ `<div class="dots">${dots}</div>`;
+		body += '<div class="tip">按中间键停止</div>';
+	} else {
+		const last = en.phase == 'done' ? (en.kept ? `<div class="ok">录好 ${en.got || 0} 次「${esc(en.name)}」，已换上新样本</div>`
+			: `<div class="err">只录到 ${en.got || 0} 次${en.stopped ? '（中途停止）' : ''}，不到 3 次，还用原来的样本</div>`)
+			: en.phase == 'error' ? `<div class="err">${esc(en.error || '出错了')}</div>` : '';
+		body = `<div>${words}</div>${last}<div class="tip">让唤醒词认得你的声音：← → 选词，按<b>中间键</b>开始，`
+			+ `用平时的距离和音量，每次震一下就喊一声，共 10 次；重录会整组换掉这个词的旧样本（数字是现有样本数）</div>`;
+	}
+	$('en').innerHTML = `<div class="t">录唤醒词样本</div>${body}`;
+}
+async function enLoad() {
+	clearTimeout(enPoll);
+	try { en = await e5.api('/enroll'); } catch (e) { en = { phase: 'error', error: e.message || e, samples: en.samples }; }
+	enDraw();
+	enPoll = setTimeout(enLoad, enBusy() ? 400 : 5000);
+}
 e5.onKey((k) => {
 	if (k.kind == 'up' || k.kind == 'down') { $('list').scrollBy({ top: k.kind == 'up' ? -100 : 100 }); return true; }
+	if ((k.kind == 'left' || k.kind == 'right') && !enBusy()) { pick = (pick + 1) % WORDS.length; enDraw(); return true; }
+	if (k.kind == 'ok') {
+		const go = enBusy() ? e5.api('/enroll/stop', { method: 'POST' })
+			: e5.api('/enroll', { method: 'POST', body: { word: WORDS[pick][0] } });
+		go.catch((e) => { en = { ...en, phase: 'error', error: e.message || e }; enDraw(); }).finally(() => setTimeout(enLoad, 300));
+		return true;
+	}
 	return false;
 });
+enLoad();
 load();
 </script>
 </body>

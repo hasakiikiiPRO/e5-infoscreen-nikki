@@ -46,8 +46,8 @@ import wave
 
 APP = '/etc/e5-infoscreen/plugins/assistant'
 KWS = '/opt/e5-kws'
-KWS_FILE = 'e5-kws-3.tar.gz'            # (wake/build-runtime.sh: its version 3)
-KWS_SHA256 = '124d8ef4194f3835bf1e4e5f9b2711125b27c99403916985f5bc09f9298a41f3'
+KWS_FILE = 'e5-kws-5.tar.gz'            # (wake/build-runtime.sh: its version 5)
+KWS_SHA256 = 'aa21230c697d3395f3a5088eb547985ce89da9737e89c72fdbde425ba1592018'
 NAS_CERT = '/etc/e5rec/nas.pem'
 FETCH_RETRY_S = 600
 RUN = '/tmp/run/e5-wake'
@@ -70,6 +70,15 @@ HERE_TAIL_S = 0.3                       # (the room's echo of it, after it ends:
 LATENCY_S = 0.3                         # (a hit is told this long after the word ended, at most: cut that much earlier)
 RING_S = 3                              # what was heard last, kept: the room's noise, the speech after the word
 WORDS = {'jarvis': ('j iǎ w éi s ī', '贾维斯'), 'fish': ('d à f éi y ú', '大肥鱼')}
+# the owner's own recordings of the words (enroll.py, the app's 录唤醒词样本): templates the
+# spotter matches (tmpl.h) -- measured on one owner, the generic model heard their 「贾维斯」 once
+# in ten, their templates ten in ten.  With them, by default only they call (setting
+# wake_voice: mine | any): no model loaded, and another voice saying the word does not.
+SAMPLES = '/mnt/e5-data/e5assist/enroll'
+MIN_TEMPLATES = 3
+# a template's cost per step under which it is the word (their own: 14-23; their other word
+# 25-44; 3.2 h of podcasts and recordings never under 40)
+TEMPLATE_COST = {'high': 30, 'normal': 27, 'low': 24}
 # how sure the spotter must be (sherpa's keywords_threshold: higher = fewer false calls, more misses).
 # Measured with the gain: 0.12 still no false call in 3.2 h of podcasts and the E5's own recordings;
 # 0.25 misses the wake word played by a speaker across the room
@@ -175,22 +184,52 @@ def assistant_busy():
     return None
 
 
+def templates(word):
+    """(how many recordings of WORD there are, when they last changed)."""
+    d = f'{SAMPLES}/{word}'
+    try:
+        n = sum(1 for f in os.listdir(d) if f.endswith('.wav'))
+        return n, os.stat(d).st_mtime
+    except OSError:
+        return 0, 0
+
+
+# recordings the spotter could not use (cut short, not the word: tmpl.h's own rules), by the
+# (count, change time) they had: that word goes back to the model until they are recorded again
+weak = {}
+
+
+def spotter_key(words, sensitivity, voice):
+    """What the spotter is started with: a change of any of it starts it again."""
+    mine = {w: templates(w) for w in words}
+    with_t = tuple(w for w in words if mine[w][0] >= MIN_TEMPLATES and weak.get(w) != mine[w])
+    # (the model too: anyone may call, or a word with no recordings of the owner yet)
+    model = voice == 'any' or len(with_t) < len(words)
+    model_words = tuple(words) if voice == 'any' else tuple(w for w in words if w not in with_t)
+    return (model, model_words, with_t, tuple(mine[w] for w in with_t), sensitivity)
+
+
 class Spotter:
     """lib/e5-kws, running: PCM in, "HIT <word> <samples>" out."""
 
-    def __init__(self, words, threshold):
+    def __init__(self, key):
+        model, model_words, with_t, _, sensitivity = key
         os.makedirs(RUN, exist_ok=True)
         kw = RUN + '/keywords.txt'
         with open(kw, 'w') as f:
-            for w in words:
+            for w in model_words:
                 f.write(f'{WORDS[w][0]} @{WORDS[w][1]}\n')
-        self.key = (tuple(words), threshold)
+        self.key = key
+        cost = TEMPLATE_COST.get(sensitivity, TEMPLATE_COST['normal'])
+        threshold = SENSITIVITY.get(sensitivity, SENSITIVITY['normal'])
         self.p = subprocess.Popen([f'{KWS}/lib/ld-linux-aarch64.so.1', '--library-path', f'{KWS}/lib',
-                                   f'{KWS}/lib/e5-kws', f'{KWS}/model', kw, str(threshold), str(RATE)],
+                                   f'{KWS}/lib/e5-kws', f'{KWS}/model' if model else '-', kw, str(threshold), str(RATE)]
+                                  + [f'{WORDS[w][1]}={SAMPLES}/{w}:{cost}' for w in with_t],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         os.set_blocking(self.p.stdout.fileno(), False)
         self.out = b''
         self.fed = 0                    # (samples written: the hits count in the same samples)
+        self.templates = {}             # (display name -> the templates it could use, as it says)
         # (fed only once the model is loaded: a full pipe meanwhile would block the loop that
         # lets go of the microphone for a call)
         self.ready = False
@@ -221,6 +260,8 @@ class Spotter:
             parts = line.decode(errors='replace').split()
             if parts == ['READY']:
                 self.ready = True
+            elif len(parts) == 3 and parts[0] == 'TEMPLATES' and parts[2].isdigit():
+                self.templates[parts[1]] = int(parts[2])
             elif len(parts) == 3 and parts[0] == 'HIT' and parts[2].isdigit():
                 found.append((parts[1], int(parts[2])))
         return found
@@ -437,7 +478,8 @@ def main():
                 if not runtime_ok():
                     on = False
             words = [w for w in (uci('wake_words') or 'jarvis fish').split() if w in WORDS] or list(WORDS)
-            threshold = SENSITIVITY.get(uci('wake_sensitivity'), SENSITIVITY['normal'])
+            sensitivity = uci('wake_sensitivity') or 'normal'
+            key = spotter_key(words, sensitivity, uci('wake_voice') or 'mine')
             if not on:
                 mic.drop()
                 if spot:
@@ -452,7 +494,19 @@ def main():
                 continue
             if feed is None:
                 feed = os.open(FEED, os.O_RDWR | os.O_NONBLOCK)
-            if spot and (spot.key != (tuple(words), threshold) or not spot.alive()):
+            busy_now = assistant_busy()
+            if spot and spot.ready:
+                # (words whose recordings it could not use: back to the model)
+                for w in spot.key[2]:
+                    if spot.templates.get(WORDS[w][1], MIN_TEMPLATES) < MIN_TEMPLATES and weak.get(w) != templates(w):
+                        weak[w] = templates(w)
+                        log(f'{WORDS[w][1]}: only {spot.templates.get(WORDS[w][1])} of the recordings usable: the model hears it')
+                        key = spotter_key(words, sensitivity, uci('wake_voice') or 'mine')
+            # (not started again while the microphone is someone else's -- a recording being made,
+            # a question asked: once, when it is over)
+            if spot and spot.alive() and spot.key != key and busy_now:
+                key = spot.key
+            if spot and (spot.key != key or not spot.alive()):
                 if not spot.alive():
                     # (a runtime that will not run: not every 5 s for ever)
                     deaths = deaths + 1 if time.monotonic() - spot_at < 60 else 1
@@ -462,7 +516,10 @@ def main():
                 spot.close()
                 spot = None
             if spot is None and time.monotonic() >= spot_retry:
-                spot = Spotter(words, threshold)
+                spot = Spotter(key)
+                st['voice'] = 'mine' if not key[0] else 'mixed' if key[2] else 'model'
+                log(f"spotter: {'your recordings only' if not key[0] else 'the model'}"
+                    f"{' + your recordings of ' + ', '.join(key[2]) if key[2] and key[0] else ''}")
                 spot_at = time.monotonic()
                 ring, ring_start = bytearray(), spot.fed
             if spot is None:

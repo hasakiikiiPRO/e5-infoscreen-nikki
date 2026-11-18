@@ -1,7 +1,7 @@
 {
 	"id": "assistant",
 	"api_version": 2,
-	"version": "2.1",
+	"version": "2.4",
 	"name": {
 		"zh": "助手",
 		"en": "Assistant"
@@ -316,8 +316,8 @@
 				"en": "Wake sensitivity"
 			},
 			"note": {
-				"zh": "喊了没反应就调灵敏；没喊却自己醒了就调严格",
-				"en": "More sensitive: fewer misses, more false wakes"
+				"zh": "喊了没反应就调灵敏；没喊却自己醒了就调严格。先在「助手」应用里录唤醒词样本，识别率会高很多",
+				"en": "Record your wake words in the app first"
 			},
 			"options": [
 				{
@@ -339,6 +339,36 @@
 					"label": {
 						"zh": "严格",
 						"en": "Strict"
+					}
+				}
+			]
+		},
+		{
+			"id": "wake_voice",
+			"type": "choice",
+			"uci": "e5-plugin-assistant.settings.wake_voice",
+			"default": "mine",
+			"label": {
+				"zh": "谁喊都醒",
+				"en": "Whose voice"
+			},
+			"note": {
+				"zh": "录过唤醒词样本后：「只认我」按你的录音比对，别人喊不醒、更省电；「谁喊都行」再加上通用模型",
+				"en": "With your recordings: only your voice, or anyone"
+			},
+			"options": [
+				{
+					"value": "mine",
+					"label": {
+						"zh": "只认我的声音",
+						"en": "Only mine"
+					}
+				},
+				{
+					"value": "any",
+					"label": {
+						"zh": "谁喊都行",
+						"en": "Anyone"
 					}
 				}
 			]

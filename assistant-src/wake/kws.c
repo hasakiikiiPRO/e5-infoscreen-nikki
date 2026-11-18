@@ -1,6 +1,10 @@
 // e5-kws: the wake words, spotted in a PCM stream (sherpa-onnx's keyword spotter, C API).
 //
-//   e5-kws MODEL_DIR KEYWORDS_FILE THRESHOLD RATE < S16LE mono PCM
+//   e5-kws MODEL_DIR KEYWORDS_FILE THRESHOLD RATE [NAME=DIR:THRESHOLD ...] < S16LE mono PCM
+//
+// MODEL_DIR "-": no model, the owner's templates only (tmpl.h: their own recordings, DTW) --
+// nothing to load, and only their voice saying it calls.  Each NAME=DIR:THRESHOLD: a word
+// heard when it sounds like one of DIR's recordings.
 //
 // The E5's microphone is quiet (speech peaks ~0.01-0.1 of full scale) and the model wants
 // speech at an ordinary level: an automatic gain brings the loudest of the last seconds to
@@ -9,7 +13,8 @@
 //
 // Prints one line per wake word heard, at once:  HIT <keyword> <samples read so far>
 // (the sample count lets the caller cut the speech that follows out of its own copy of the
-// stream).  "READY" once the model is loaded.  Ends at the end of its input.
+// stream).  "TEMPLATES <name> <n>" per word, "READY" once the model is loaded.  Ends at the end
+// of its input.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,16 +23,44 @@
 #include <unistd.h>
 
 #include "c-api.h"
+#include "tmpl.h"
 
 #define TARGET 0.3f
 #define MAX_GAIN 32.0f
 #define HALF_S 2.0f
 
+static TWord words[T_MAXW];
+static int nwords, refract;
+static long long t_total;
+
+static void t_heard(const float *cep, float e, void *arg) {
+  (void)e; (void)arg;
+  for (int i = 0; i < nwords; i++) {
+    float c = t_step(&words[i], cep);
+    if (refract || !(c < words[i].thr)) continue;
+    printf("HIT %s %lld\n", words[i].name, t_total);
+    fflush(stdout);
+    for (int j = 0; j < nwords; j++) t_reset(&words[j]);
+    refract = T_REFRACT;
+    return;
+  }
+  if (refract) refract--;
+}
+
 int main(int argc, char **argv) {
-  if (argc != 5) {
-    fprintf(stderr, "usage: %s MODEL_DIR KEYWORDS_FILE THRESHOLD RATE < s16le\n", argv[0]);
+  if (argc < 5) {
+    fprintf(stderr, "usage: %s MODEL_DIR KEYWORDS_FILE THRESHOLD RATE [NAME=DIR:THRESHOLD ...] < s16le\n", argv[0]);
     return 2;
   }
+  t_front_init();
+  // (every word's count, 0 too: the caller gives a word with too few back to the model)
+  for (int i = 5; i < argc && nwords < T_MAXW; i++) {
+    int n = t_word(&words[nwords], argv[i]);
+    printf("TEMPLATES %s %d\n", words[nwords].name[0] ? words[nwords].name : "?", n);
+    if (n) nwords++;
+  }
+  fflush(stdout);
+  int use_model = strcmp(argv[1], "-") != 0;
   const char *dir = argv[1];
   char enc[512], dec[512], join[512], tok[512];
   snprintf(enc, sizeof enc, "%s/encoder.int8.onnx", dir);
@@ -52,12 +85,19 @@ int main(int argc, char **argv) {
   c.keywords_threshold = (float)atof(argv[3]);
   c.keywords_file = argv[2];
 
-  const SherpaOnnxKeywordSpotter *ks = SherpaOnnxCreateKeywordSpotter(&c);
-  if (!ks) {
-    fprintf(stderr, "e5-kws: the model did not load\n");
-    return 1;
+  const SherpaOnnxKeywordSpotter *ks = NULL;
+  const SherpaOnnxOnlineStream *s = NULL;
+  if (use_model) {
+    ks = SherpaOnnxCreateKeywordSpotter(&c);
+    if (!ks) {
+      fprintf(stderr, "e5-kws: the model did not load\n");
+      return 1;
+    }
+    s = SherpaOnnxCreateKeywordStream(ks);
   }
-  const SherpaOnnxOnlineStream *s = SherpaOnnxCreateKeywordStream(ks);
+  // (no model and no templates: it still runs, hearing nothing -- the caller reads TEMPLATES and
+  // gives the words back to the model, rather than this exiting and being started again for ever)
+  TStream ts = {0};
   printf("READY\n");
   fflush(stdout);
 
@@ -83,6 +123,16 @@ int main(int argc, char **argv) {
       for (int j = 0; j < down; j++) sum += raw[i + j];
       f[m++] = sum / (32768.0f * down);
     }
+    // the templates: before the gain (their cepstra have the level taken out anyway)
+    t_total = total + (long long)use;
+    if (nwords) t_feed(&ts, f, (int)m, t_heard, NULL);
+    if (!use_model) {
+      total += (long long)use;
+      size_t left = have - use * 2;
+      memmove(raw, (char *)raw + use * 2, left);
+      have = left;
+      continue;
+    }
     // the gain: per block (0.1 s at most), the envelope decays between blocks
     float peak = 1e-4f;
     for (size_t i = 0; i < m; i++) peak = fmaxf(peak, fabsf(f[i]));
@@ -105,7 +155,7 @@ int main(int argc, char **argv) {
       if (r) SherpaOnnxDestroyKeywordResult(r);
     }
   }
-  SherpaOnnxDestroyOnlineStream(s);
-  SherpaOnnxDestroyKeywordSpotter(ks);
+  if (s) SherpaOnnxDestroyOnlineStream(s);
+  if (ks) SherpaOnnxDestroyKeywordSpotter(ks);
   return 0;
 }

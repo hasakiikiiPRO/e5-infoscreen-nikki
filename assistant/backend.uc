@@ -10,8 +10,11 @@
 //   POST /cancel    drop the current run (and its voice)
 //   POST /skip      enough of the answer read: stop the voice (and, in a conversation, listen again)
 //   GET  /history   the last questions and answers
+//   GET  /enroll    recording your voice saying a wake word (enroll.py): its state, the samples kept
+//   POST /enroll    {word: fish|jarvis}: start (not while a question runs)
+//   POST /enroll/stop
 //   GET  /notifications  (the minute check: early.html put in, the wake service installed, if not)
-import { readfile, writefile, rename, stat, unlink, mkdir } from 'fs';
+import { readfile, writefile, rename, stat, unlink, mkdir, lsdir } from 'fs';
 
 const APP = '/etc/e5-infoscreen/plugins/assistant';
 const RUN = '/tmp/run/e5-assistant';
@@ -19,6 +22,7 @@ const INDEX = '/usr/share/e5-infoscreen/www/index.html';
 const ANCHOR = '<script src="power-menu.js"></script>\n';
 const BEGIN = '<script>/* BEGIN e5-assistant', END = '/* END e5-assistant */</script>\n';
 const HISTORY = '/mnt/e5-data/e5assist/history.json';
+const SAMPLES = '/mnt/e5-data/e5assist/enroll';
 const INIT = '/etc/init.d/e5-assistant-wake', WAKE_STATE = '/tmp/run/e5-wake/state.json';
 const STARTING_S = 10;                  // (python's start and the microphone: "starting" is not "gone" before this)
 
@@ -35,6 +39,18 @@ return function(ctx) {
 		if (!match(pid, /^[0-9]+$/)) return null;
 		let cmd = readfile(`/proc/${pid}/cmdline`);
 		return cmd != null && index(cmd, 'listen.py') >= 0 ? pid : null;
+	}
+	function enrolling() {
+		let pid = trim(readfile(`${RUN}/enroll.pid`) ?? '');
+		if (!match(pid, /^[0-9]+$/)) return null;
+		let cmd = readfile(`/proc/${pid}/cmdline`);
+		return cmd != null && index(cmd, 'enroll.py') >= 0 ? pid : null;
+	}
+	function samples() {
+		let n = {};
+		for (let w in [ 'fish', 'jarvis' ])
+			n[w] = length(filter(lsdir(`${SAMPLES}/${w}`) ?? [], (f) => match(f, /\.wav$/)));
+		return n;
 	}
 	function current() {
 		return trim(readfile(`${RUN}/run`) ?? '');
@@ -108,6 +124,7 @@ return function(ctx) {
 		'POST /start': function(req) {
 			checks();
 			if (!enabled()) return fail('助手已关闭', 409);
+			if (enrolling()) return fail('正在录唤醒词样本', 409);
 			let pid = running();
 			if (pid) {
 				mark('cancel');
@@ -135,6 +152,29 @@ return function(ctx) {
 		'POST /skip': function(req) {
 			mark('skip');
 			ctx.run(`kill $(pgrep -f 'e5-assistant/answer[.]') 2>/dev/null`);
+			return { ok: true };
+		},
+		'GET /enroll': function(req) {
+			let s = load(`${RUN}/enroll.json`, { phase: 'idle' });
+			let busy = enrolling() != null;
+			if (!busy && s.phase != 'done' && s.phase != 'error' && s.phase != 'idle' && time() - (s.at ?? 0) > 10)
+				s = { ...s, phase: 'error', error: '录音进程意外退出了' };
+			return { ok: true, ...s, busy, samples: samples() };
+		},
+		'POST /enroll': function(req) {
+			let w = req.body?.word;
+			if (w != 'fish' && w != 'jarvis') return fail('不认识的唤醒词', 400);
+			if (enrolling()) return fail('已经在录了', 409);
+			if (running()) return fail('助手正在用麦克风，等它说完', 409);
+			mkdir(RUN);
+			ctx.run(`chmod 700 '${RUN}'; rm -f '${RUN}/enroll.stop'`);
+			writefile(`${RUN}/enroll.json`, sprintf('%J', { phase: 'starting', word: w, at: time() }));
+			ctx.run(`cd / && (setsid /usr/bin/python3 '${APP}/enroll.py' '${w}' 10 </dev/null >/dev/null 2>&1 & echo $! > '${RUN}/enroll.pid')`);
+			return { ok: true };
+		},
+		'POST /enroll/stop': function(req) {
+			mkdir(RUN);
+			writefile(`${RUN}/enroll.stop`, '');
 			return { ok: true };
 		},
 		'POST /cancel': function(req) {
