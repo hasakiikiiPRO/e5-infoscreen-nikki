@@ -40,7 +40,7 @@ const LOCKS = { 'e5-assistant-wake': '喊名字召唤在听', 'e5-recorder': '�
 let s = null, busy = false;
 function draw() {
 	if (!s) return;
-	$('mode').innerHTML = s.on ? '🌙 低功耗模式' : '☀️ 正常模式';
+	$('mode').innerHTML = s.on ? '低功耗模式' : '正常模式';
 	if (s.on && s.since) {
 		const d = new Date(s.since * 1000);
 		$('act').textContent = `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())} 进入 · 按中间键退出`;
