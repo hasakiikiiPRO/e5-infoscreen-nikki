@@ -1,0 +1,83 @@
+<script>/* BEGIN e5-lowpower (the 低功耗 app, /etc/e5-infoscreen/plugins/lowpower) */
+// Hold # (a key nothing else uses) for hold_ms: low power mode on or off -- the motor pulses
+// once going in, twice coming out, and a note shows for a moment.  A short press is left as
+// it was.  Before power-menu.js and mobile.js (their capturing listeners take keys on the
+// lock screen), like the assistant's.  Not while the screen is dark, in a call, or without
+// the app (GET /state 404: nothing at all).
+(function () {
+	const API = '/api/plugins/lowpower';
+	let cfg = null, cfgAt = -Infinity, gone = false, timer = null, down = false, note = null, noteTimer = null;
+	const dark = () => typeof blank !== 'undefined' && blank;
+	const inCall = () => { try { return !!window.T551MCalls?.active(); } catch (_) { return false; } };
+	const isHash = (e) => e.key == '#' || e.code == 'NumpadHash';
+	function config() {
+		if (gone || performance.now() - cfgAt < 30000) return;
+		cfgAt = performance.now();
+		fetch(API + '/state', { cache: 'no-store' }).then((r) => {
+			if (r.status == 404) { gone = true; return null; }
+			return r.ok ? r.json() : null;
+		}).then((s) => { if (s) cfg = s; }, () => {});
+	}
+	const buzz = (ms) => fetch('/api/vibrate', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ ms }) }).catch(() => {});
+	function show(text) {
+		if (!note) {
+			const css = document.createElement('style');
+			css.textContent = '#e5-lowpower{position:fixed;left:24px;right:24px;top:40%;z-index:2147483646;background:rgba(18,24,34,.96);' +
+				'color:#e8ecf2;border-radius:14px;padding:14px;text-align:center;font:15px/1.5 "Noto Sans CJK SC",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.5)}' +
+				'#e5-lowpower small{display:block;color:#8997a8;font-size:12px;margin-top:4px}';
+			document.head.appendChild(css);
+			note = document.createElement('div');
+			note.id = 'e5-lowpower';
+			document.body.appendChild(note);
+		}
+		note.innerHTML = text;
+		note.hidden = false;
+		clearTimeout(noteTimer);
+		noteTimer = setTimeout(() => { note.hidden = true; }, 3000);
+	}
+	function toggle() {
+		fetch(API + '/toggle', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+			.then((r) => r.json()).then((s) => {
+				cfg = { ...(cfg || {}), ...s };
+				if (s.on) {
+					buzz(80);
+					show('🌙 已进入低功耗模式<small>关喊名字召唤' + (s.pause_recorder ? '、暂停录音' : '') +
+						'、30 秒内关蜂窝射频（收不到电话短信）；熄屏后深度休眠' + (s.usb_power ? '（现在插着电，插电时不休眠）' : '') + '</small><small>再长按 # 退出</small>');
+				} else {
+					buzz(60); setTimeout(() => buzz(60), 250);
+					show('☀️ 已退出低功耗模式<small>射频、喊名字召唤、录音都恢复原来的设置</small>');
+				}
+			}, () => show('低功耗模式切换失败'));
+	}
+	function key(e) {
+		if (gone || !isHash(e)) return;
+		config();
+		if (e.type == 'keydown') {
+			if (e.repeat || down) return;
+			down = true;
+			if (dark() || inCall() || !cfg) return;
+			clearTimeout(timer);
+			timer = setTimeout(() => { if (down) toggle(); }, cfg.hold_ms || 1000);
+			return;
+		}
+		down = false;
+		clearTimeout(timer);
+	}
+	function attach(win) {
+		const doc = win?.document;
+		if (!doc || doc.__e5LowPower) return;
+		doc.__e5LowPower = true;
+		win.addEventListener('keydown', key, true);
+		win.addEventListener('keyup', key, true);
+	}
+	attach(window);
+	// the apps' frames: the screen hands each to T551MPower.attach (power-menu.js)
+	window.addEventListener('DOMContentLoaded', () => {
+		const P = window.T551MPower;
+		if (P?.attach) { const a = P.attach; P.attach = (win) => { a(win); attach(win); }; }
+	});
+	window.addEventListener('blur', () => { down = false; clearTimeout(timer); });
+	config();
+})();
+/* END e5-lowpower */</script>

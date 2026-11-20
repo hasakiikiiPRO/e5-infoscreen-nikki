@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>低功耗</title>
+<style>
+	:root { color-scheme: dark; --bg:#0b0e13; --card:#151c26; --text:#e8ecf2; --dim:#8997a8; --ok:#7fd68a; --warn:#ffcf7a; }
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+		font: 14px "Noto Sans CJK SC", "DejaVu Sans", sans-serif; cursor: none; user-select: none; }
+	body { display: flex; flex-direction: column; padding: 8px 12px; gap: 7px; }
+	.heading { display: flex; justify-content: space-between; align-items: center; height: 23px; flex-shrink: 0; }
+	.heading strong { font-size: 16px; } .heading span { font-size: 11px; color: var(--dim); }
+	.card { background: var(--card); border-radius: 10px; padding: 9px 11px; line-height: 1.55; }
+	.big { font-size: 20px; text-align: center; padding: 14px 0 6px; }
+	.tip { font-size: 12px; color: var(--dim); }
+	.tip b { color: var(--text); font-weight: 600; }
+	.row { display: flex; justify-content: space-between; font-size: 13px; }
+	.ok { color: var(--ok); } .warn { color: var(--warn); }
+	#list { flex: 1; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; gap: 7px; }
+</style>
+</head>
+<body>
+<header class="heading"><strong>低功耗</strong><span id="st"></span></header>
+<div class="card"><div class="big" id="mode">…</div><div class="tip" id="act" style="text-align:center"></div></div>
+<div id="list">
+	<div class="card" id="checks"></div>
+	<div class="card tip">在任何界面<b>长按 # 键</b>（约 1 秒，震一下）进入，再长按退出；进入震一下，退出震两下。<br>
+	进入后：关「喊名字召唤」、暂停录音（可在设置里改成照常录）、关蜂窝射频（这期间<b>收不到这张卡的电话和短信</b>，家里 Wi-Fi 上网不受影响）；熄屏 30 秒后系统深度休眠，按任意键唤醒。<br>
+	退出后：这几项恢复成原来的设置；低功耗期间你自己改过的那项保持你改的。</div>
+</div>
+<script src="/sdk/e5.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const p2 = (n) => String(n).padStart(2, '0');
+const LOCKS = { 'e5-assistant-wake': '喊名字召唤在听', 'e5-recorder': '正在录音', 'e5-recorder-upload': '正在上传录音', 'e5-assistant': '助手在说话' };
+let s = null, busy = false;
+function draw() {
+	if (!s) return;
+	$('mode').innerHTML = s.on ? '🌙 低功耗模式' : '☀️ 正常模式';
+	if (s.on && s.since) {
+		const d = new Date(s.since * 1000);
+		$('act').textContent = `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())} 进入 · 按中间键退出`;
+	} else $('act').textContent = '按中间键进入';
+	$('st').textContent = s.sleep ? `休眠状态：${s.sleep}` : '';
+	const locks = (s.wake_lock || []).filter((x) => x);
+	const rows = [
+		['蜂窝射频', s.radio_off ? ['已关', 'ok'] : [s.on ? '30 秒内关闭' : '开着', s.on ? 'warn' : '']],
+		['唤醒锁（不让深睡）', locks.length ? [locks.map((x) => LOCKS[x] || x).join('、'), 'warn'] : ['没有', 'ok']],
+		['供电', s.usb_power ? ['插着电（插电时不休眠，也不费电池）', 'warn'] : ['电池', 'ok']],
+	];
+	$('checks').innerHTML = '<div class="tip">能不能深度休眠</div>' + rows.map(([k, [v, c]]) =>
+		`<div class="row"><span>${k}</span><span class="${c}">${esc(v)}</span></div>`).join('');
+}
+async function load() {
+	try { s = await e5.api('/state'); draw(); } catch (e) { $('mode').textContent = e.message || e; }
+	setTimeout(load, 3000);
+}
+e5.onKey((k) => {
+	if (k.kind == 'ok') {
+		if (busy || !s) return true;
+		busy = true;
+		e5.api('/toggle', { body: { on: !s.on } }).then((r) => { s = r; draw(); })
+			.catch((e) => { $('act').textContent = e.message || e; }).finally(() => { busy = false; });
+		return true;
+	}
+	if (k.kind == 'up' || k.kind == 'down') { $('list').scrollBy({ top: k.kind == 'up' ? -80 : 80 }); return true; }
+	return false;
+});
+load();
+</script>
+</body>
+</html>

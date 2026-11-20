@@ -1,0 +1,50 @@
+{
+	"id": "lowpower",
+	"api_version": 2,
+	"version": "1.0",
+	"name": {
+		"zh": "低功耗",
+		"en": "Low power"
+	},
+	"description": {
+		"zh": "长按 # 键进出低功耗模式：关喊名字召唤、暂停录音、关蜂窝射频，熄屏后深度休眠",
+		"en": "Hold # to enter or leave low power mode"
+	},
+	"entry": "index.html",
+	"order": 26,
+	"settings": [
+		{
+			"id": "pause_recorder",
+			"type": "choice",
+			"uci": "e5-plugin-lowpower.settings.pause_recorder",
+			"default": "1",
+			"label": {
+				"zh": "低功耗时暂停录音",
+				"en": "Pause recording"
+			},
+			"note": {
+				"zh": "录音时 E5 不能深睡；关掉这项则低功耗时照常录音（省电少很多）",
+				"en": "Recording keeps the E5 awake"
+			},
+			"options": [
+				{ "value": "1", "label": { "zh": "暂停", "en": "Pause" } },
+				{ "value": "0", "label": { "zh": "照常录", "en": "Keep recording" } }
+			]
+		},
+		{
+			"id": "hold_ms",
+			"type": "choice",
+			"uci": "e5-plugin-lowpower.settings.hold_ms",
+			"default": "1000",
+			"label": {
+				"zh": "长按 # 多久切换",
+				"en": "Hold # for"
+			},
+			"options": [
+				{ "value": "600", "label": { "zh": "0.6 秒", "en": "0.6 s" } },
+				{ "value": "1000", "label": { "zh": "1 秒", "en": "1 s" } },
+				{ "value": "1500", "label": { "zh": "1.5 秒", "en": "1.5 s" } }
+			]
+		}
+	]
+}
