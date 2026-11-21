@@ -11,6 +11,13 @@
 //                              30 s -- no calls, no SMS; deep sleep waits for it (the modem
 //                              would wake the system every few seconds) -- and back to data
 //                              mode, the radio back on and the modem enabled again
+//   Wi-Fi off                  wireless.radio0.disabled 1: the radio itself (the 在家 app leaves a
+//                              radio switched off alone).  This E5's Wi-Fi driver (sprd_wlan_combo,
+//                              sc2355) does not survive a suspend while joined to a network: its
+//                              queue is not resumed, the disconnect times out, the suspend fails,
+//                              and its work loops on a CPU until the kernel's soft lockup panic
+//                              reboots the board -- measured 11-21, every few attempts.  With the
+//                              radio off it is never in the way.  Offline meanwhile, then.
 // Each value is kept as it was (saved_*) and given back on the way out -- unless it was
 // changed by hand meanwhile: then the hand's stays.
 //   GET  /state          {on, since, hold_ms, wake_lock, radio_off, usb_power, sleep}
@@ -23,29 +30,33 @@ const CFG = 'e5-plugin-lowpower';
 const INDEX = '/usr/share/e5-infoscreen/www/index.html';
 const ANCHOR = '<script src="power-menu.js"></script>\n';
 const BEGIN = '<script>/* BEGIN e5-lowpower', END = '/* END e5-lowpower */</script>\n';
-// what it sets: [ config, option, the value in low power, what it was if unset ]
+// what it sets: [ config, section, option, the value in low power, what it was if unset, saved as ]
 const KNOBS = [
-	[ 'e5-plugin-assistant', 'wake', '0', '0' ],
-	[ 'e5-plugin-recorder', 'enabled', '0', '0' ],
-	[ 'e5-plugin-hotspotdata', 'mode', 'radio', 'radio' ],
+	[ 'e5-plugin-assistant', 'settings', 'wake', '0', '0', 'saved_wake' ],
+	[ 'e5-plugin-recorder', 'settings', 'enabled', '0', '0', 'saved_enabled' ],
+	[ 'e5-plugin-hotspotdata', 'settings', 'mode', 'radio', 'radio', 'saved_mode' ],
+	[ 'wireless', 'radio0', 'disabled', '1', '0', 'saved_wifi' ],
 ];
 
 return function(ctx) {
 	function fail(msg, code) {
 		return { status: code ?? 502, type: 'application/json', body: sprintf('%J', { ok: false, error: msg }) };
 	}
-	function get(conf, opt) {
-		return ctx.uci().get(conf, 'settings', opt);
+	function get(conf, opt, sect) {
+		return ctx.uci().get(conf, sect ?? 'settings', opt);
 	}
 	// (only values of the kind these options hold: they go into a shell command)
 	const safe = (v) => v != null && match(v, /^[a-z0-9]*$/);
+	// pairs: [ config, option, value ] in the settings section, or [ config, option, value, section ]
 	function set(pairs) {
 		let cmd = '';
 		let confs = {};
 		for (let p in pairs) {
 			if (!safe(p[2])) continue;
-			cmd += `uci -q get ${p[0]}.settings >/dev/null || uci set ${p[0]}.settings=settings; ` +
-				`uci set ${p[0]}.settings.${p[1]}='${p[2]}'; `;
+			let sect = p[3] ?? 'settings';
+			if (sect == 'settings')
+				cmd += `uci -q get ${p[0]}.settings >/dev/null || uci set ${p[0]}.settings=settings; `;
+			cmd += `uci set ${p[0]}.${sect}.${p[1]}='${p[2]}'; `;
 			confs[p[0]] = true;
 		}
 		for (let c in keys(confs)) cmd += `uci commit ${c}; `;
@@ -57,26 +68,31 @@ return function(ctx) {
 		let pairs = [], saved = [];
 		for (let k in KNOBS) {
 			if (k[0] == 'e5-plugin-recorder' && !pause_rec) continue;
-			let was = get(k[0], k[1]) ?? '';
-			saved = [ ...saved, [ CFG, `saved_${k[1]}`, safe(was) ? (was == '' ? 'unset' : was) : 'unset' ] ];
-			pairs = [ ...pairs, [ k[0], k[1], k[2] ] ];
+			let was = get(k[0], k[2], k[1]) ?? '';
+			saved = [ ...saved, [ CFG, k[5], safe(was) ? (was == '' ? 'unset' : was) : 'unset' ] ];
+			pairs = [ ...pairs, [ k[0], k[2], k[3], k[1] ] ];
 		}
 		set([ ...saved, [ CFG, 'on', '1' ], [ CFG, 'since', sprintf('%d', time()) ] ]);
 		set(pairs);
+		ctx.run('setsid sh -c "wifi down radio0; wifi reload" >/dev/null 2>&1 &');
 		ctx.log('low power mode on');
 	}
 	function leave() {
 		let pairs = [];
+		let wifi = false;
 		for (let k in KNOBS) {
-			let was = get(CFG, `saved_${k[1]}`);
+			let was = get(CFG, k[5]);
 			if (was == null) continue;                 // (not ours to give back)
 			// (changed by hand meanwhile: the hand's stays)
-			if ((get(k[0], k[1]) ?? k[3]) != k[2]) continue;
-			if (was == 'unset') ctx.run(`uci -q delete ${k[0]}.settings.${k[1]}; uci commit ${k[0]}`);
-			else pairs = [ ...pairs, [ k[0], k[1], was ] ];
+			if ((get(k[0], k[2], k[1]) ?? k[4]) != k[3]) continue;
+			if (k[0] == 'wireless') wifi = true;
+			if (was == 'unset') ctx.run(`uci -q delete ${k[0]}.${k[1]}.${k[2]}; uci commit ${k[0]}`);
+			else pairs = [ ...pairs, [ k[0], k[2], was, k[1] ] ];
 		}
 		set(pairs);
-		ctx.run(`for o in saved_wake saved_enabled saved_mode since; do uci -q delete ${CFG}.settings.$o; done; ` +
+		// (wifi reload does not bring up a radio taken down: up as well)
+		if (wifi) ctx.run('setsid sh -c "wifi reload; sleep 2; wifi up radio0" >/dev/null 2>&1 &');
+		ctx.run(`for o in saved_wake saved_enabled saved_mode saved_wifi since; do uci -q delete ${CFG}.settings.$o; done; ` +
 			`uci set ${CFG}.settings.on='0'; uci commit ${CFG}`);
 		ctx.log('low power mode off');
 	}
@@ -119,6 +135,7 @@ return function(ctx) {
 			ok: true, on: on(), since: since || null, hold_ms: hold_ms(),
 			wake_lock: locks == '' ? [] : split(locks, ' '),
 			radio_off: length(glob('/var/run/hotspotdata.radio-off.*')) > 0,
+			wifi_off: get('wireless', 'disabled', 'radio0') == '1',
 			usb_power: usb,
 			sleep: trim(readfile('/var/run/hotspotdata.sleep/state') ?? ''),
 			pause_recorder: get(CFG, 'pause_recorder') != '0',

@@ -27,8 +27,8 @@
 <div id="list">
 	<div class="card" id="checks"></div>
 	<div class="card tip">在任何界面<b>长按 # 键</b>（约 1 秒，震一下）进入，再长按退出；进入震一下，退出震两下。<br>
-	进入后：关「喊名字召唤」、暂停录音（可在设置里改成照常录）、关蜂窝射频（这期间<b>收不到这张卡的电话和短信</b>，家里 Wi-Fi 上网不受影响）；熄屏 30 秒后系统深度休眠，按任意键唤醒。<br>
-	退出后：这几项恢复成原来的设置；低功耗期间你自己改过的那项保持你改的。</div>
+	进入后：关「喊名字召唤」、暂停录音（可在设置里改成照常录）、<b>关 Wi-Fi 和蜂窝射频</b>（这期间完全离线，<b>收不到这张卡的电话和短信</b>，助手也用不了）；熄屏 30 秒后系统深度休眠，按任意键唤醒。<br>为什么要关 Wi-Fi：这台 E5 的 Wi-Fi 驱动在连着网络时休眠会卡死、导致系统自动重启。<br>
+	退出后：这几项恢复成原来的设置，Wi-Fi 自动重新连上；低功耗期间你自己改过的那项保持你改的。</div>
 </div>
 <script src="/sdk/e5.js"></script>
 <script>
@@ -48,6 +48,7 @@ function draw() {
 	$('st').textContent = s.sleep ? `休眠状态：${s.sleep}` : '';
 	const locks = (s.wake_lock || []).filter((x) => x);
 	const rows = [
+		['Wi-Fi', s.wifi_off ? ['已关', 'ok'] : ['开着（连着网时休眠会卡死，所以不休眠）', s.on ? 'warn' : '']],
 		['蜂窝射频', s.radio_off ? ['已关', 'ok'] : [s.on ? '30 秒内关闭' : '开着', s.on ? 'warn' : '']],
 		['唤醒锁（不让深睡）', locks.length ? [locks.map((x) => LOCKS[x] || x).join('、'), 'warn'] : ['没有', 'ok']],
 		['供电', s.usb_power ? ['插着电（插电时不休眠，也不费电池）', 'warn'] : ['电池', 'ok']],
