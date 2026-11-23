@@ -4,10 +4,24 @@
 # batlog-suspend.log (persistent: the system log is in RAM and gone with a flat battery).
 B=/sys/class/power_supply/battery; F=/sys/class/power_supply/sc27xx-fgu; S=/var/run/hotspotdata.sleep/stats
 OUT=/mnt/e5-data/batlog.csv; FAILS=/mnt/e5-data/batlog-suspend.log; MARK=/tmp/run/e5-batlog.dmesg
-[ -f $OUT ] || echo "time,capacity,ocv_uv,status,online,sleeps,slept_s,lowpower,state" > $OUT
+HEAD="time,capacity,ocv_uv,status,online,sleeps,slept_s,lowpower,state,attempts,fails,last_failed_dev,last_failed_errno,last_failed_step,last_woke_by"
+[ -f $OUT ] || echo "$HEAD" > $OUT
+# (an older file, fewer columns: started again beside it)
+[ "$(head -1 $OUT)" = "$HEAD" ] || { mv $OUT $OUT.$(date +%m%d%H%M); echo "$HEAD" > $OUT; }
+P=/sys/power/suspend_stats
 v() { sed -n "s/^$1=//p" $S 2>/dev/null; }
 on=0; for o in /sys/class/power_supply/*/online; do [ "$(cat $o)" = 1 ] && on=1; done
-echo "$(date +%s),$(cat $B/capacity),$(cat $F/voltage_ocv 2>/dev/null),$(cat $B/status),$on,$(v sleeps),$(v slept),$(uci -q get e5-plugin-lowpower.settings.on),$(cat /var/run/hotspotdata.sleep/state 2>/dev/null | tr ' ,' '__')" >> $OUT
+echo "$(date +%s),$(cat $B/capacity),$(cat $F/voltage_ocv 2>/dev/null),$(cat $B/status),$on,$(v sleeps),$(v slept),$(uci -q get e5-plugin-lowpower.settings.on),$(cat /var/run/hotspotdata.sleep/state 2>/dev/null | tr ' ,' '__'),$(v attempts),$(v fails),$(cat $P/last_failed_dev 2>/dev/null | tr ', ' ';_'),$(cat $P/last_failed_errno 2>/dev/null),$(cat $P/last_failed_step 2>/dev/null),$(v last_by)" >> $OUT
+# fails grown since the last run: the sleep service's own words and the kernel's wakeup sources that are active
+FMARK=/tmp/run/e5-batlog.fails
+f=$(v fails); pf=$(cat $FMARK 2>/dev/null)
+if [ -n "$f" ] && [ "$f" != "$pf" ] && [ "$f" != 0 ]; then
+	{ echo "== $(date '+%F %T') fails $pf -> $f; suspend_stats: $(for x in fail failed_freeze failed_prepare failed_suspend failed_suspend_late failed_suspend_noirq last_failed_dev last_failed_errno last_failed_step; do printf '%s=%s ' $x "$(cat $P/$x 2>/dev/null | tr '\n' ' ')"; done)"
+	  echo "-- sleep service:"; logread -e hotspotdata 2>/dev/null | grep -iE 'sleep|suspend|woken|awake|backoff' | tail -15
+	  echo "-- active kernel wakeup sources:"; awk 'NR>1 && $6>0 {print $1, "active_since=" $6}' /sys/kernel/debug/wakeup_sources 2>/dev/null
+	  echo "-- user wake locks: [$(cat /sys/power/wake_lock)]"; } >> $FAILS
+	echo "$f" > $FMARK
+fi
 # kernel lines about failed or aborted suspends, after the last one seen
 last=$(cat $MARK 2>/dev/null)
 new=$(dmesg | grep -E 'failed to suspend|Some devices failed|Freezing .* failed|suspend.*abort|wakeup source|Wakeup pending|PM: dpm_run_callback|error -[0-9]+|active wakeup|Operate SDIO bus|CMD_DISCONNECT' | tail -30)
