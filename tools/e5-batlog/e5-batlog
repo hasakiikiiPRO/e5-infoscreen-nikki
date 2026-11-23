@@ -1,0 +1,23 @@
+#!/bin/sh
+# e5-batlog: one line of the battery and the deep sleep counters, for standby estimates (cron, every 10 min).
+# And what kept it from sleeping: the kernel's suspend failures since the last run go to
+# batlog-suspend.log (persistent: the system log is in RAM and gone with a flat battery).
+B=/sys/class/power_supply/battery; F=/sys/class/power_supply/sc27xx-fgu; S=/var/run/hotspotdata.sleep/stats
+OUT=/mnt/e5-data/batlog.csv; FAILS=/mnt/e5-data/batlog-suspend.log; MARK=/tmp/run/e5-batlog.dmesg
+[ -f $OUT ] || echo "time,capacity,ocv_uv,status,online,sleeps,slept_s,lowpower,state" > $OUT
+v() { sed -n "s/^$1=//p" $S 2>/dev/null; }
+on=0; for o in /sys/class/power_supply/*/online; do [ "$(cat $o)" = 1 ] && on=1; done
+echo "$(date +%s),$(cat $B/capacity),$(cat $F/voltage_ocv 2>/dev/null),$(cat $B/status),$on,$(v sleeps),$(v slept),$(uci -q get e5-plugin-lowpower.settings.on),$(cat /var/run/hotspotdata.sleep/state 2>/dev/null | tr ' ,' '__')" >> $OUT
+# kernel lines about failed or aborted suspends, after the last one seen
+last=$(cat $MARK 2>/dev/null)
+new=$(dmesg | grep -E 'failed to suspend|Some devices failed|Freezing .* failed|suspend.*abort|wakeup source|Wakeup pending|PM: dpm_run_callback|error -[0-9]+|active wakeup|Operate SDIO bus|CMD_DISCONNECT' | tail -30)
+if [ -n "$new" ]; then
+	end=$(echo "$new" | tail -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/')
+	if [ "$end" != "$last" ]; then
+		{ echo "== $(date '+%F %T') fails=$(v fails) lowpower=$(uci -q get e5-plugin-lowpower.settings.on) wifi_disabled=$(uci -q get wireless.radio0.disabled) wlan0=$(cat /sys/class/net/wlan0/operstate 2>/dev/null) bt=$(cat /sys/class/rfkill/*/state 2>/dev/null | tr '\n' ' ') wake_lock=[$(cat /sys/power/wake_lock)] screen=$(cat /sys/class/backlight/*/brightness)"
+		  echo "$new" | awk -v l="$last" '{ t=$1; gsub(/[\[\]]/,"",t); if (l == "" || t+0 > l+0) print }'; } >> $FAILS
+		echo "$end" > $MARK
+	fi
+fi
+# (kept small: the last 3000 lines)
+[ -f $FAILS ] && [ $(wc -l < $FAILS) -gt 4000 ] && { tail -3000 $FAILS > $FAILS.new; mv $FAILS.new $FAILS; }
