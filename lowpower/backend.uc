@@ -20,8 +20,15 @@
 //                              radio off it is never in the way.  Offline meanwhile, then.
 // Each value is kept as it was (saved_*) and given back on the way out -- unless it was
 // changed by hand meanwhile: then the hand's stays.
-//   GET  /state          {on, since, hold_ms, wake_lock, radio_off, usb_power, sleep}
+// On a schedule (setting schedule, schedule_start/end, default 22:00-07:30): cron runs POST /tick
+// every minute (while awake: a sleeping E5 runs nothing -- so a scheduled night also has the sleep
+// service wake it every 10 minutes, sleep_wake_every, and the morning comes at most that late).
+// Only the turn of day to night and night to day does anything: the night turns it on (if it is
+// off), the morning turns it off -- only if the night turned it on (auto).  A hand in between --
+// out at midnight, in before ten -- is left as it is.
+//   GET  /state          {on, since, hold_ms, wake_lock, radio_off, usb_power, sleep, schedule}
 //   POST /toggle         {on?}: in or out (no on: the other way) -> the new state
+//   POST /tick           {now?: "HH:MM" (a test)}: the schedule looked at
 //   GET  /notifications  (the minute check: early.html put in, if not)
 import { readfile, writefile, rename, stat, unlink, glob } from 'fs';
 
@@ -36,7 +43,10 @@ const KNOBS = [
 	[ 'e5-plugin-recorder', 'settings', 'enabled', '0', '0', 'saved_enabled' ],
 	[ 'e5-plugin-hotspotdata', 'settings', 'mode', 'radio', 'radio', 'saved_mode' ],
 	[ 'wireless', 'radio0', 'disabled', '1', '0', 'saved_wifi' ],
+	// (a scheduled night only: woken every 10 minutes, so that the morning is not missed)
+	[ 'e5-plugin-hotspotdata', 'settings', 'sleep_wake_every', '10', '0', 'saved_wakeevery', 'auto' ],
 ];
+const CRON = '* * * * * curl -s -m 20 -X POST http://127.0.0.1:8088/api/plugins/lowpower/tick >/dev/null 2>&1 # e5-lowpower schedule';
 
 return function(ctx) {
 	function fail(msg, code) {
@@ -63,19 +73,20 @@ return function(ctx) {
 		if (cmd) ctx.run(`touch /etc/config/${CFG}; ` + cmd);
 	}
 	function on() { return get(CFG, 'on') == '1'; }
-	function enter() {
+	function enter(auto) {
 		let pause_rec = get(CFG, 'pause_recorder') != '0';
 		let pairs = [], saved = [];
 		for (let k in KNOBS) {
 			if (k[0] == 'e5-plugin-recorder' && !pause_rec) continue;
+			if (k[6] == 'auto' && !auto) continue;
 			let was = get(k[0], k[2], k[1]) ?? '';
 			saved = [ ...saved, [ CFG, k[5], safe(was) ? (was == '' ? 'unset' : was) : 'unset' ] ];
 			pairs = [ ...pairs, [ k[0], k[2], k[3], k[1] ] ];
 		}
-		set([ ...saved, [ CFG, 'on', '1' ], [ CFG, 'since', sprintf('%d', time()) ] ]);
+		set([ ...saved, [ CFG, 'on', '1' ], [ CFG, 'since', sprintf('%d', time()) ], [ CFG, 'auto', auto ? '1' : '0' ] ]);
 		set(pairs);
 		ctx.run('setsid sh -c "wifi down radio0; wifi reload" >/dev/null 2>&1 &');
-		ctx.log('low power mode on');
+		ctx.log(auto ? 'low power mode on (the schedule)' : 'low power mode on');
 	}
 	function leave() {
 		let pairs = [];
@@ -92,7 +103,7 @@ return function(ctx) {
 		set(pairs);
 		// (wifi reload does not bring up a radio taken down: up as well)
 		if (wifi) ctx.run('setsid sh -c "wifi reload; sleep 2; wifi up radio0" >/dev/null 2>&1 &');
-		ctx.run(`for o in saved_wake saved_enabled saved_mode saved_wifi since; do uci -q delete ${CFG}.settings.$o; done; ` +
+		ctx.run(`for o in saved_wake saved_enabled saved_mode saved_wifi saved_wakeevery since auto; do uci -q delete ${CFG}.settings.$o; done; ` +
 			`uci set ${CFG}.settings.on='0'; uci commit ${CFG}`);
 		ctx.log('low power mode off');
 	}
@@ -115,11 +126,47 @@ return function(ctx) {
 		ctx.log('index.html patched (hold # for low power), the screen restarts');
 		ctx.run("setsid sh -c 'sleep 2; /etc/init.d/e5-infoscreen restart' >/dev/null 2>&1 &");
 	}
+	function ensure_cron() {
+		let tab = readfile('/etc/crontabs/root') ?? '';
+		if (index(tab, CRON) >= 0) return;
+		let keep = join('\n', filter(split(tab, '\n'), (l) => l != '' && index(l, '# e5-lowpower schedule') < 0));
+		writefile('/etc/crontabs/root', (keep ? keep + '\n' : '') + CRON + '\n');
+		ctx.run('/etc/init.d/cron enable; /etc/init.d/cron restart >/dev/null 2>&1');
+		ctx.log('schedule: cron installed');
+	}
 	function checks() {
 		if (!ctx.state_get('checked', 60)) {
 			ctx.state_put('checked', { at: time() });
 			ensure_early();
+			ensure_cron();
 		}
+	}
+	function hhmm(v, def) {
+		let m = match(v ?? '', /^([0-9]{1,2}):([0-9]{2})$/);
+		return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : def;
+	}
+	function schedule() {
+		return {
+			on: get(CFG, 'schedule') != '0',
+			start: get(CFG, 'schedule_start') ?? '22:00',
+			end: get(CFG, 'schedule_end') ?? '07:30',
+		};
+	}
+	// -> 'night' or 'day' at NOW (minutes into the day)
+	function phase(now) {
+		let s = schedule();
+		let a = hhmm(s.start, 22 * 60), b = hhmm(s.end, 7 * 60 + 30);
+		let night = a < b ? (now >= a && now < b) : (now >= a || now < b);
+		return night ? 'night' : 'day';
+	}
+	function tick(now) {
+		if (!schedule().on) return 'off';
+		let p = phase(now), last = get(CFG, 'sched_phase');
+		if (p == last) return p;
+		set([ [ CFG, 'sched_phase', p ] ]);
+		if (p == 'night' && !on()) enter(true);
+		else if (p == 'day' && last == 'night' && on() && get(CFG, 'auto') == '1') leave();
+		return p + ' (turned)';
 	}
 	function hold_ms() {
 		let v = int(get(CFG, 'hold_ms') ?? '1000');
@@ -139,6 +186,8 @@ return function(ctx) {
 			usb_power: usb,
 			sleep: trim(readfile('/var/run/hotspotdata.sleep/state') ?? ''),
 			pause_recorder: get(CFG, 'pause_recorder') != '0',
+			auto: get(CFG, 'auto') == '1',
+			schedule: schedule(),
 		};
 	}
 
@@ -154,6 +203,13 @@ return function(ctx) {
 			else if (!want && on()) leave();
 			// (what was just written: a uci cursor read now may still hold the old)
 			return { ...state(), on: want };
+		},
+		'POST /tick': function(req) {
+			let t = localtime();
+			let now = t.hour * 60 + t.min;
+			if (type(req.body?.now) == 'string') now = hhmm(req.body.now, now);
+			let r = tick(now);
+			return { ok: true, tick: r, on: on() };
 		},
 		'GET /notifications': function(req) {
 			checks();

@@ -1,18 +1,182 @@
 {
 	"id": "lowpower",
 	"api_version": 2,
-	"version": "1.2",
+	"version": "1.3",
 	"name": {
 		"zh": "低功耗",
 		"en": "Low power"
 	},
 	"description": {
-		"zh": "长按 # 键进出低功耗模式：关喊名字召唤、暂停录音、关蜂窝射频，熄屏后深度休眠",
-		"en": "Hold # to enter or leave low power mode"
+		"zh": "长按 # 键或每晚定时进出低功耗模式：关喊名字召唤、暂停录音、关 Wi-Fi 和蜂窝射频，熄屏后深度休眠",
+		"en": "Hold # or a nightly schedule for low power mode"
 	},
 	"entry": "index.html",
 	"order": 26,
 	"settings": [
+		{
+			"id": "schedule",
+			"type": "toggle",
+			"uci": "e5-plugin-lowpower.settings.schedule",
+			"default": "1",
+			"label": {
+				"zh": "每晚定时低功耗",
+				"en": "Nightly schedule"
+			},
+			"note": {
+				"zh": "到点自动进入、到点自动退出（醒来最多晚 10 分钟）；夜里手动退出后当晚不再自动进入，你自己开的也不会被自动关掉",
+				"en": "In at the start, out at the end (up to 10 min late)"
+			}
+		},
+		{
+			"id": "schedule_start",
+			"type": "choice",
+			"uci": "e5-plugin-lowpower.settings.schedule_start",
+			"default": "22:00",
+			"label": {
+				"zh": "几点进入",
+				"en": "Start"
+			},
+			"options": [
+				{
+					"value": "20:00",
+					"label": {
+						"zh": "20:00",
+						"en": "20:00"
+					}
+				},
+				{
+					"value": "21:00",
+					"label": {
+						"zh": "21:00",
+						"en": "21:00"
+					}
+				},
+				{
+					"value": "21:30",
+					"label": {
+						"zh": "21:30",
+						"en": "21:30"
+					}
+				},
+				{
+					"value": "22:00",
+					"label": {
+						"zh": "22:00",
+						"en": "22:00"
+					}
+				},
+				{
+					"value": "22:30",
+					"label": {
+						"zh": "22:30",
+						"en": "22:30"
+					}
+				},
+				{
+					"value": "23:00",
+					"label": {
+						"zh": "23:00",
+						"en": "23:00"
+					}
+				},
+				{
+					"value": "23:30",
+					"label": {
+						"zh": "23:30",
+						"en": "23:30"
+					}
+				},
+				{
+					"value": "00:00",
+					"label": {
+						"zh": "00:00",
+						"en": "00:00"
+					}
+				},
+				{
+					"value": "01:00",
+					"label": {
+						"zh": "01:00",
+						"en": "01:00"
+					}
+				}
+			]
+		},
+		{
+			"id": "schedule_end",
+			"type": "choice",
+			"uci": "e5-plugin-lowpower.settings.schedule_end",
+			"default": "07:30",
+			"label": {
+				"zh": "几点退出",
+				"en": "End"
+			},
+			"options": [
+				{
+					"value": "05:00",
+					"label": {
+						"zh": "05:00",
+						"en": "05:00"
+					}
+				},
+				{
+					"value": "06:00",
+					"label": {
+						"zh": "06:00",
+						"en": "06:00"
+					}
+				},
+				{
+					"value": "06:30",
+					"label": {
+						"zh": "06:30",
+						"en": "06:30"
+					}
+				},
+				{
+					"value": "07:00",
+					"label": {
+						"zh": "07:00",
+						"en": "07:00"
+					}
+				},
+				{
+					"value": "07:30",
+					"label": {
+						"zh": "07:30",
+						"en": "07:30"
+					}
+				},
+				{
+					"value": "08:00",
+					"label": {
+						"zh": "08:00",
+						"en": "08:00"
+					}
+				},
+				{
+					"value": "08:30",
+					"label": {
+						"zh": "08:30",
+						"en": "08:30"
+					}
+				},
+				{
+					"value": "09:00",
+					"label": {
+						"zh": "09:00",
+						"en": "09:00"
+					}
+				},
+				{
+					"value": "10:00",
+					"label": {
+						"zh": "10:00",
+						"en": "10:00"
+					}
+				}
+			]
+		},
 		{
 			"id": "pause_recorder",
 			"type": "choice",
@@ -27,8 +191,20 @@
 				"en": "Recording keeps the E5 awake"
 			},
 			"options": [
-				{ "value": "1", "label": { "zh": "暂停", "en": "Pause" } },
-				{ "value": "0", "label": { "zh": "照常录", "en": "Keep recording" } }
+				{
+					"value": "1",
+					"label": {
+						"zh": "暂停",
+						"en": "Pause"
+					}
+				},
+				{
+					"value": "0",
+					"label": {
+						"zh": "照常录",
+						"en": "Keep recording"
+					}
+				}
 			]
 		},
 		{
@@ -41,9 +217,27 @@
 				"en": "Hold # for"
 			},
 			"options": [
-				{ "value": "600", "label": { "zh": "0.6 秒", "en": "0.6 s" } },
-				{ "value": "1000", "label": { "zh": "1 秒", "en": "1 s" } },
-				{ "value": "1500", "label": { "zh": "1.5 秒", "en": "1.5 s" } }
+				{
+					"value": "600",
+					"label": {
+						"zh": "0.6 秒",
+						"en": "0.6 s"
+					}
+				},
+				{
+					"value": "1000",
+					"label": {
+						"zh": "1 秒",
+						"en": "1 s"
+					}
+				},
+				{
+					"value": "1500",
+					"label": {
+						"zh": "1.5 秒",
+						"en": "1.5 s"
+					}
+				}
 			]
 		}
 	]

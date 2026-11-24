@@ -27,6 +27,7 @@
 <div id="list">
 	<div class="card" id="checks"></div>
 	<div class="card tip">在任何界面<b>长按 # 键</b>（约 1 秒，震一下）进入，再长按退出；进入震一下，退出震两下。<br>
+	<b>每晚定时</b>（默认开，22:00 进入、07:30 退出，设置里可改）：夜里你手动退出，当晚不会再被拉回去；你自己提前开的，早上也不会被自动关。早上最多晚 10 分钟恢复（深睡时定时任务不跑，定时那晚每 10 分钟醒一次看时间）。<br>
 	进入后：关「喊名字召唤」、暂停录音（可在设置里改成照常录）、<b>关 Wi-Fi 和蜂窝射频</b>（这期间完全离线，<b>收不到这张卡的电话和短信</b>，助手也用不了）；熄屏 30 秒后系统深度休眠，按任意键唤醒。<br>为什么要关 Wi-Fi：这台 E5 的 Wi-Fi 驱动在连着网络时休眠会卡死、导致系统自动重启。<br>
 	退出后：这几项恢复成原来的设置，Wi-Fi 自动重新连上；低功耗期间你自己改过的那项保持你改的。</div>
 </div>
@@ -43,7 +44,7 @@ function draw() {
 	$('mode').innerHTML = s.on ? '低功耗模式' : '正常模式';
 	if (s.on && s.since) {
 		const d = new Date(s.since * 1000);
-		$('act').textContent = `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())} 进入 · 按中间键退出`;
+		$('act').textContent = `${d.getMonth() + 1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())} ${s.auto ? '定时' : ''}进入 · ${s.auto && s.schedule ? s.schedule.end + ' 自动退出 · ' : ''}按中间键退出`;
 	} else $('act').textContent = '按中间键进入';
 	$('st').textContent = s.sleep ? `休眠状态：${s.sleep}` : '';
 	const locks = (s.wake_lock || []).filter((x) => x);
@@ -52,6 +53,7 @@ function draw() {
 		['蜂窝射频', s.radio_off ? ['已关', 'ok'] : [s.on ? '30 秒内关闭' : '开着', s.on ? 'warn' : '']],
 		['唤醒锁（不让深睡）', locks.length ? [locks.map((x) => LOCKS[x] || x).join('、'), 'warn'] : ['没有', 'ok']],
 		['供电', s.usb_power ? ['插着电（插电时不休眠，也不费电池）', 'warn'] : ['电池', 'ok']],
+		['每晚定时', s.schedule && s.schedule.on ? [`${s.schedule.start} 进入，${s.schedule.end} 退出`, 'ok'] : ['关（设置里打开）', '']],
 	];
 	$('checks').innerHTML = '<div class="tip">能不能深度休眠</div>' + rows.map(([k, [v, c]]) =>
 		`<div class="row"><span>${k}</span><span class="${c}">${esc(v)}</span></div>`).join('');
