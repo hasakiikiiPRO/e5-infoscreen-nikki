@@ -25,12 +25,14 @@
 // service wake it every 10 minutes, sleep_wake_every, and the morning comes at most that late).
 // Only the turn of day to night and night to day does anything: the night turns it on (if it is
 // off), the morning turns it off -- only if the night turned it on (auto).  A hand in between --
-// out at midnight, in before ten -- is left as it is.
+// out at midnight, in before ten -- is left as it is.  And not while the hotspot has devices on
+// it (away from home, the phone online through it): the night waits, minute by minute, until
+// they are gone -- low power turns the Wi-Fi off, the hotspot with it.
 //   GET  /state          {on, since, hold_ms, wake_lock, radio_off, usb_power, sleep, schedule}
 //   POST /toggle         {on?}: in or out (no on: the other way) -> the new state
 //   POST /tick           {now?: "HH:MM" (a test)}: the schedule looked at
 //   GET  /notifications  (the minute check: early.html put in, if not)
-import { readfile, writefile, rename, stat, unlink, glob } from 'fs';
+import { readfile, writefile, rename, stat, unlink, glob, popen } from 'fs';
 
 const APP = '/etc/e5-infoscreen/plugins/lowpower';
 const CFG = 'e5-plugin-lowpower';
@@ -159,10 +161,21 @@ return function(ctx) {
 		let night = a < b ? (now >= a && now < b) : (now >= a || now < b);
 		return night ? 'night' : 'day';
 	}
-	function tick(now) {
+	// devices on the hotspot (Wi-Fi up as an access point), 0 otherwise
+	function hotspot_devices() {
+		let f = popen('iw dev 2>/dev/null; for i in $(iw dev 2>/dev/null | sed -n "s/^[[:space:]]*Interface //p"); do iw dev $i station dump 2>/dev/null; done', 'r');
+		if (!f) return 0;
+		let out = f.read('all') ?? '';
+		f.close();
+		if (index(out, 'type AP') < 0) return 0;
+		return length(match(out, /Station [0-9a-f:]+/g) ?? []);
+	}
+	function tick(now, devices) {
 		if (!schedule().on) return 'off';
 		let p = phase(now), last = get(CFG, 'sched_phase');
 		if (p == last) return p;
+		// (the night not marked yet: tried again next minute)
+		if (p == 'night' && !on() && (devices ?? hotspot_devices()) > 0) return 'night (waiting: devices on the hotspot)';
 		set([ [ CFG, 'sched_phase', p ] ]);
 		if (p == 'night' && !on()) enter(true);
 		else if (p == 'day' && last == 'night' && on() && get(CFG, 'auto') == '1') leave();
@@ -208,7 +221,7 @@ return function(ctx) {
 			let t = localtime();
 			let now = t.hour * 60 + t.min;
 			if (type(req.body?.now) == 'string') now = hhmm(req.body.now, now);
-			let r = tick(now);
+			let r = tick(now, type(req.body?.devices) == 'int' ? req.body.devices : null);
 			return { ok: true, tick: r, on: on() };
 		},
 		'GET /notifications': function(req) {
