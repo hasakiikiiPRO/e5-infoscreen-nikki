@@ -1,0 +1,42 @@
+#!/bin/sh
+# e5-lowbat-mail: a mail when the battery is running out on battery power (cron, every 5 min):
+# once under 10 %, once more under 5 %; again only after it has been charging or back to 15 %.
+# A mail that does not go out (no network) is tried at the next run.
+# The SMTP account: /etc/e5-lowbat-msmtprc (root only, not in git; install.sh writes it).
+B=/sys/class/power_supply/battery
+RC=/etc/e5-lowbat-msmtprc
+SENT=/etc/e5-lowbat.sent          # (on flash: a reboot does not send it again)
+[ -f $RC ] || exit 0
+cap=$(cat $B/capacity); st=$(cat $B/status)
+on=0; for o in /sys/class/power_supply/*/online; do [ "$(cat $o)" = 1 ] && on=1; done
+case "$st" in Charging|Full) chg=1 ;; *) chg=$on ;; esac
+# (a test mail: e5-lowbat-mail --test 8 -- as if at 8 % on battery, its own mark in /tmp)
+[ "${1:-}" = --test ] && { cap=${2:-8}; st="Discharging (测试邮件)"; chg=0; SENT=/tmp/run/e5-lowbat.test; }
+if [ "$chg" = 1 ] || [ "$cap" -ge 15 ]; then rm -f $SENT; exit 0; fi
+sent=$(cat $SENT 2>/dev/null || echo 100)
+if [ "$cap" -lt 5 ]; then lvl=5; elif [ "$cap" -lt 10 ]; then lvl=10; else exit 0; fi
+[ "$sent" -le "$lvl" ] && exit 0
+TO=$(sed -n 's/^#to //p' $RC)
+FROM=$(sed -n 's/^from //p' $RC)
+n=0
+for i in $(iw dev 2>/dev/null | awk '/Interface/ {print $2}'); do
+	n=$((n + $(iw dev $i station dump 2>/dev/null | grep -c '^Station')))
+done
+if [ $lvl = 5 ]; then subj="E5 电量 ${cap}%，马上要关机了"; else subj="E5 电量低于 10%（现在 ${cap}%）"; fi
+body="E5 现在电量 ${cap}%，没在充电（$st）。
+时间：$(date '+%F %T')
+电压：$(cat /sys/class/power_supply/sc27xx-fgu/voltage_ocv 2>/dev/null) µV
+热点上连着的设备：$n 台
+低功耗模式：$( [ "$(uci -q get e5-plugin-lowpower.settings.on)" = 1 ] && echo 开 || echo 关 )
+
+请尽快插上充电（墙插充电头；插电脑 USB 口在开热点时基本充不进去）。
+电量耗尽后 OpenWrt 起不来会退回安卓；充到 25% 会自动切回 OpenWrt，
+或在安卓里 Magisk → 模块 →「切回 OpenWrt」→ 操作。"
+subj64="=?UTF-8?B?$(printf '%s' "$subj" | ucode -l fs -e 'print(b64enc(fs.stdin.read("all")))')?="
+if printf 'From: E5 <%s>\nTo: %s\nSubject: %s\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nDate: %s\n\n%s\n' \
+	"$FROM" "$TO" "$subj64" "$(date -R)" "$body" | msmtp -C $RC "$TO" 2>/tmp/run/e5-lowbat-mail.err; then
+	echo $lvl > $SENT; sync
+	logger -t e5-lowbat-mail "sent: $subj"
+else
+	logger -t e5-lowbat-mail "not sent ($cap%): $(tail -1 /tmp/run/e5-lowbat-mail.err)"
+fi
