@@ -1,0 +1,6 @@
+id=e5_back_to_openwrt
+name=切回 OpenWrt / Back to OpenWrt
+version=1.0
+versionCode=1
+author=hasakiikii
+description=按「操作」切回 OpenWrt；OpenWrt 没起来退回安卓时，充到 25% 自动再试一次（只试一次）。关闭本模块即不自动切回。
